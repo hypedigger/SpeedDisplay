@@ -2,6 +2,8 @@
 
 **A very fast image & video viewer for Windows**, in the spirit of XnView MP / IrfanView — Rust backend (Tauri 2), TypeScript frontend, hardware video decoding (WebView2).
 
+![SpeedDisplay](docs/screenshot.png)
+
 ## Features
 
 - **Virtualized thumbnail grid** — stays smooth with thousands of files; alternative list view
