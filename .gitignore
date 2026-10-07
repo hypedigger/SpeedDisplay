@@ -1,0 +1,21 @@
+# Node
+node_modules/
+dist/
+
+# Rust
+core/target/
+src-tauri/target/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# outils locaux & archives
+.claude/
+*.zip
+src-tauri/gen/
+*.lnk

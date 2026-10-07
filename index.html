@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpeedDisplay</title>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="side-head">
+        <div class="side-title">SpeedDisplay</div>
+        <button id="btn-settings" class="tb" data-i18n-title="settings">⚙</button>
+      </div>
+      <div class="side-sep" id="fav-sep" data-i18n="favorites"></div>
+      <div id="favorites"></div>
+      <div class="side-sep" data-i18n="folders"></div>
+      <div id="tree"></div>
+    </aside>
+    <div id="splitter"></div>
+
+    <main id="main">
+      <div id="toolbar">
+        <button id="btn-back" class="tb" data-i18n-title="act_navBack">←</button>
+        <button id="btn-fwd" class="tb" data-i18n-title="act_navForward">→</button>
+        <button id="btn-up" class="tb" data-i18n-title="act_up">▲</button>
+        <button id="btn-fav" class="tb" data-i18n-title="favAdd">☆</button>
+        <div id="breadcrumb" data-i18n-title="addressTip"></div>
+        <input id="path-input" class="hidden" type="text" spellcheck="false" />
+        <div id="filter-wrap">
+          <input id="filter-text" type="text" data-i18n-ph="search" data-i18n-title="searchTip" />
+          <button id="filter-clear" class="hidden" data-i18n-title="searchClear">✕</button>
+        </div>
+        <div id="kind-seg" data-i18n-title="filterKindTip">
+          <button class="seg" data-kind="all" data-i18n="all"></button>
+          <button class="seg" data-kind="image">🖼 <span data-i18n="images"></span></button>
+          <button class="seg" data-kind="video">🎬 <span data-i18n="videos"></span></button>
+        </div>
+        <button id="btn-allfiles" class="tb" data-i18n-title="showAllTip">📄</button>
+        <button id="btn-filter" class="tb" data-i18n="filters" data-i18n-title="filtersTip"></button>
+        <select id="sort" data-i18n-title="sortTip">
+          <option value="name-asc" data-i18n="sortNameAsc"></option>
+          <option value="name-desc" data-i18n="sortNameDesc"></option>
+          <option value="date-asc" data-i18n="sortDateAsc"></option>
+          <option value="date-desc" data-i18n="sortDateDesc"></option>
+          <option value="taken-asc" data-i18n="sortTakenAsc"></option>
+          <option value="taken-desc" data-i18n="sortTakenDesc"></option>
+          <option value="size-asc" data-i18n="sortSizeAsc"></option>
+          <option value="size-desc" data-i18n="sortSizeDesc"></option>
+        </select>
+        <button id="btn-view" class="tb">☰</button>
+        <input id="thumb-size" type="range" min="120" max="420" step="20" data-i18n-title="thumbSize" />
+      </div>
+
+      <div id="filter-pop" class="hidden">
+        <div class="f-row"><span data-i18n="fMinSize"></span><input id="f-min-size" type="number" min="0" /> Mo</div>
+        <div class="f-row"><span data-i18n="fMaxSize"></span><input id="f-max-size" type="number" min="0" /> Mo</div>
+        <div class="f-row"><span data-i18n="fDateFrom"></span><input id="f-date-from" type="date" /></div>
+        <div class="f-row"><span data-i18n="fDateTo"></span><input id="f-date-to" type="date" /></div>
+        <div class="f-row"><span data-i18n="fRating"></span>
+          <select id="f-rating">
+            <option value="0">—</option><option value="1">★</option><option value="2">★★</option>
+            <option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option>
+          </select>
+        </div>
+        <div class="f-row"><span data-i18n="fColor"></span>
+          <select id="f-color">
+            <option value="" data-i18n="fAll"></option>
+            <option value="#e05555">🔴</option><option value="#e8a33d">🟠</option>
+            <option value="#e5d947">🟡</option><option value="#58c26a">🟢</option>
+            <option value="#4f9cf0">🔵</option><option value="#b06fd8">🟣</option>
+          </select>
+        </div>
+        <div class="f-row"><span data-i18n="fFlag"></span>
+          <select id="f-flag">
+            <option value="" data-i18n="fAll"></option>
+            <option value="pick" data-i18n="fPick"></option>
+            <option value="reject" data-i18n="fReject"></option>
+            <option value="none" data-i18n="fNone"></option>
+          </select>
+        </div>
+        <div class="f-row"><span data-i18n="fTag"></span><input id="f-tag" type="text" /></div>
+        <div class="f-row"><label><input id="f-recursive" type="checkbox" /> <span data-i18n="fRecursive"></span></label></div>
+        <div class="f-row f-actions">
+          <button id="f-apply" class="tb" data-i18n="fApply"></button>
+          <button id="f-reset" class="tb" data-i18n="fReset"></button>
+        </div>
+        <div class="f-row">
+          <select id="f-saved"></select>
+          <button id="f-save" class="tb" data-i18n="fSave"></button>
+        </div>
+        <div class="f-row f-sep">
+          <label><input id="dup-near" type="checkbox" checked /> <span data-i18n="dupNearLabel"></span></label>
+          <button id="f-dup" class="tb" data-i18n="dupFind"></button>
+        </div>
+      </div>
+      <div id="grid-area">
+        <div id="grid-wrap">
+          <div id="grid-spacer"><div id="grid"></div></div>
+          <table id="list" class="hidden">
+            <thead><tr></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="jump-top-row" class="jump-row hidden">
+          <button id="btn-jump-top" class="jump" data-i18n-title="jumpTop">▲</button>
+          <button id="btn-page-up-t" class="jump" data-i18n-title="pageUpTip">↑</button>
+          <button id="btn-page-down-t" class="jump" data-i18n-title="pageDownTip">↓</button>
+        </div>
+        <div id="jump-bottom-row" class="jump-row hidden">
+          <button id="btn-page-up-b" class="jump" data-i18n-title="pageUpTip">↑</button>
+          <button id="btn-page-down-b" class="jump" data-i18n-title="pageDownTip">↓</button>
+          <button id="btn-jump-bottom" class="jump" data-i18n-title="jumpBottom">▼</button>
+        </div>
+      </div>
+      <div id="statusbar">
+        <span id="status-main"></span>
+        <span id="status-disk"></span>
+      </div>
+    </main>
+  </div>
+
+  <!-- Full screen viewer (images) -->
+  <div id="viewer" class="overlay hidden">
+    <div id="viewer-scroll"><div id="viewer-rot"><img id="viewer-img" alt="" /></div></div>
+    <div id="viewer-loading" class="hidden"></div>
+    <div id="zoom-badge" class="hidden"></div>
+    <div id="viewer-tools">
+      <button class="vt" id="vt-fs" data-i18n-title="act_fullscreen">🗖</button>
+      <span class="vt-sep"></span>
+      <button class="vt" data-fit="fit" data-i18n-title="fitBoth">⤢</button>
+      <button class="vt" data-fit="fitW" data-i18n-title="fitWidth">↔</button>
+      <button class="vt" data-fit="fitH" data-i18n-title="fitHeight">↕</button>
+      <button class="vt" data-fit="actual" data-i18n-title="fitActual">1:1</button>
+      <button class="vt" id="vt-enlarge" data-i18n-title="enlargeSmall">⛶</button>
+      <span class="vt-sep"></span>
+      <button class="vt" id="vt-rotl" data-i18n-title="act_rotLeft">↶</button>
+      <button class="vt" id="vt-rotr" data-i18n-title="act_rotRight">↷</button>
+      <button class="vt" id="vt-strip" data-i18n-title="act_strip">🎞</button>
+      <button class="vt" id="vt-info" data-i18n-title="act_info">ⓘ</button>
+      <button class="vt" id="vt-print" data-i18n-title="printTitle">🖨</button>
+    </div>
+    <div id="viewer-info"></div>
+    <button id="viewer-close" class="ov-btn ov-close" data-i18n-title="act_close">✕</button>
+    <button id="viewer-prev" class="ov-btn ov-prev" data-i18n-title="act_prev">‹</button>
+    <button id="viewer-next" class="ov-btn ov-next" data-i18n-title="act_next">›</button>
+    <button id="viewer-del" class="ov-btn ov-del" data-i18n-title="act_delete">🗑</button>
+  </div>
+
+  <!-- Full screen player (videos) -->
+  <div id="player" class="overlay hidden">
+    <video id="player-video" controls autoplay></video>
+    <div id="player-tools">
+      <select id="player-speed" data-i18n-title="speed">
+        <option value="0.25">0,25×</option>
+        <option value="0.5">0,5×</option>
+        <option value="1" selected>1×</option>
+        <option value="1.5">1,5×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+      <button id="btn-mark-a" class="vt" data-i18n-title="markA">A</button>
+      <button id="btn-mark-b" class="vt" data-i18n-title="markB">B</button>
+      <button id="btn-ab-loop" class="vt" data-i18n-title="abLoopTip">⟳ A-B</button>
+      <button id="btn-cut" class="vt" data-i18n="cutExport" data-i18n-title="cutTip"></button>
+    </div>
+    <div id="player-info"></div>
+    <!-- Compact floating transport, true fullscreen only (native controls off). -->
+    <div id="pbar">
+      <button id="pbar-play" class="pbar-btn" data-i18n-title="playPause">▶</button>
+      <span id="pbar-cur" class="pbar-time">0:00</span>
+      <div id="pbar-seek" data-i18n-title="seekTip">
+        <div id="pbar-buf"></div>
+        <div id="pbar-prog"><i></i></div>
+      </div>
+      <span id="pbar-dur" class="pbar-time">0:00</span>
+      <button id="pbar-mute" class="pbar-btn" data-i18n-title="muteTip">🔉</button>
+      <div id="pbar-vol" data-i18n-title="volume"><div id="pbar-vol-fill"></div></div>
+      <button id="pbar-exit" class="pbar-btn" data-i18n-title="act_close">⤓</button>
+    </div>
+    <button id="player-close" class="ov-btn ov-close" data-i18n-title="act_close">✕</button>
+    <button id="player-prev" class="ov-btn ov-prev" data-i18n-title="act_prev">‹</button>
+    <button id="player-next" class="ov-btn ov-next" data-i18n-title="act_next">›</button>
+    <button id="player-del" class="ov-btn ov-del" data-i18n-title="act_delete">🗑</button>
+  </div>
+
+  <!-- Shared by both overlays: the filmstrip and the info panel follow
+       whichever medium is on screen, image or video. -->
+  <div id="strip" class="hidden"></div>
+  <div id="exif-panel" class="hidden">
+    <h3 data-i18n="infoTitle"></h3>
+    <div id="exif-body"></div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings" class="overlay hidden">
+    <div id="settings-panel">
+      <h2 data-i18n="settings"></h2>
+      <div id="settings-tabs">
+        <button class="stab active" data-tab="general" data-i18n="tabGeneral"></button>
+        <button class="stab" data-tab="view" data-i18n="tabView"></button>
+        <button class="stab" data-tab="font" data-i18n="tabFont"></button>
+        <button class="stab" data-tab="keys" data-i18n="tabKeys"></button>
+        <button class="stab" data-tab="cache" data-i18n="tabCache"></button>
+      </div>
+      <div class="spane" id="pane-general">
+      <label>
+        <span data-i18n="language"></span>
+        <select id="set-lang">
+          <option value="fr">Français</option>
+          <option value="en">English (UK)</option>
+          <option value="it">Italiano</option>
+          <option value="es">Español</option>
+          <option value="ru">Русский</option>
+          <option value="pt-BR">Português (Brasil)</option>
+        </select>
+      </label>
+      <label>
+        <span data-i18n="theme" data-i18n-title="tipTheme"></span>
+        <span class="theme-row">
+          <button id="theme-prev" class="theme-nav" data-i18n-title="themePrev">‹</button>
+          <select id="set-theme"></select>
+          <button id="theme-next" class="theme-nav" data-i18n-title="themeNext">›</button>
+        </span>
+      </label>
+      <label>
+        <span data-i18n="startDir" data-i18n-title="tipStartDir"></span>
+        <select id="set-start">
+          <option value="last" data-i18n="startLast"></option>
+          <option value="fixed" data-i18n="startFixed"></option>
+        </select>
+      </label>
+      <div id="start-path-row" class="hidden">
+        <input id="set-start-path" type="text" spellcheck="false" />
+        <button id="btn-start-current" data-i18n="useCurrent"></button>
+      </div>
+      <label>
+        <span data-i18n="videoPreview" data-i18n-title="tipVideoPreview"></span>
+        <select id="set-preview">
+          <option value="hover" data-i18n="previewHover"></option>
+          <option value="pregen" data-i18n="previewPregen"></option>
+          <option value="off" data-i18n="previewOff"></option>
+        </select>
+      </label>
+      <label>
+        <span data-i18n="videoLoop" data-i18n-title="tipVideoLoop"></span>
+        <input type="checkbox" id="set-videoloop" />
+      </label>
+      <label>
+        <span data-i18n="wheelSeek" data-i18n-title="tipWheelSeek"></span>
+        <span class="font-size-wrap">
+          <input type="range" id="set-wheelseek" min="1" max="120" step="1" />
+          <span id="wheelseek-val"></span>
+        </span>
+      </label>
+      <label>
+        <span data-i18n="scrollbarWidth" data-i18n-title="tipScrollbar"></span>
+        <span class="font-size-wrap">
+          <input type="range" id="set-scrollbar" min="100" max="500" step="25" />
+          <span id="scrollbar-val"></span>
+        </span>
+      </label>
+      <label>
+        <span data-i18n="showHidden" data-i18n-title="tipShowHidden"></span>
+        <input type="checkbox" id="set-hidden" />
+      </label>
+      <label>
+        <span data-i18n="autoRefresh" data-i18n-title="tipAutoRefresh"></span>
+        <input type="checkbox" id="set-autorefresh" />
+      </label>
+      <label>
+        <span data-i18n="customImg" data-i18n-title="tipCustomExt"></span>
+        <input type="text" id="set-custom-img" placeholder="svg, jxl…" spellcheck="false" />
+      </label>
+      <label>
+        <span data-i18n="customVid" data-i18n-title="tipCustomExt"></span>
+        <input type="text" id="set-custom-vid" placeholder="rmvb…" spellcheck="false" />
+      </label>
+      <label>
+        <span data-i18n="associate" data-i18n-title="tipAssociate"></span>
+        <button id="btn-associate" data-i18n="associateGo"></button>
+      </label>
+      </div>
+
+      <div class="spane hidden" id="pane-view">
+      <label>
+        <span data-i18n="openFS" data-i18n-title="tipOpenFS"></span>
+        <input type="checkbox" id="set-open-fs" />
+      </label>
+      <label>
+        <span data-i18n="loopNav" data-i18n-title="tipLoopNav"></span>
+        <input type="checkbox" id="set-loop" />
+      </label>
+      <label>
+        <span data-i18n="keepZoom" data-i18n-title="tipKeepZoom"></span>
+        <input type="checkbox" id="set-keepzoom" />
+      </label>
+      <label>
+        <span data-i18n="xmpWrite" data-i18n-title="tipXmp"></span>
+        <input type="checkbox" id="set-xmp" />
+      </label>
+      <label>
+        <span data-i18n="exifRotation" data-i18n-title="tipExifRot"></span>
+        <input type="checkbox" id="set-exifrot" />
+      </label>
+      <label>
+        <span data-i18n="preloadCount" data-i18n-title="tipPreload"></span>
+        <span class="font-size-wrap">
+          <input type="range" id="set-preload" min="0" max="20" step="1" />
+          <span id="preload-val"></span>
+        </span>
+      </label>
+      <label>
+        <span data-i18n="navBtnSize" data-i18n-title="tipNavBtnSize"></span>
+        <span class="font-size-wrap">
+          <input type="range" id="set-navbtn-size" min="100" max="300" step="25" />
+          <span id="navbtn-val"></span>
+        </span>
+      </label>
+      <h3 data-i18n="viewWindowed"></h3>
+      <label>
+        <span data-i18n="reduceLarge" data-i18n-title="tipReduce"></span>
+        <input type="checkbox" id="set-reduce" />
+      </label>
+      <label>
+        <span data-i18n="enlargeSmall" data-i18n-title="tipEnlarge"></span>
+        <input type="checkbox" id="set-enlarge" />
+      </label>
+      <label>
+        <span data-i18n="navBtnShow" data-i18n-title="tipNavBtnShow"></span>
+        <input type="checkbox" id="set-navbtn-show" />
+      </label>
+      <label>
+        <span data-i18n="delBtnShow" data-i18n-title="tipDelBtn"></span>
+        <input type="checkbox" id="set-delbtn-show" />
+      </label>
+      <h3 data-i18n="toolbarTitle" data-i18n-title="tipToolbar"></h3>
+      <div id="vt-options" class="sub-pane"></div>
+      <h3 data-i18n="viewFullscreen"></h3>
+      <label>
+        <span data-i18n="reduceLarge" data-i18n-title="tipReduce"></span>
+        <input type="checkbox" id="set-fs-reduce" />
+      </label>
+      <label>
+        <span data-i18n="enlargeSmall" data-i18n-title="tipEnlarge"></span>
+        <input type="checkbox" id="set-fs-enlarge" />
+      </label>
+      <label>
+        <span data-i18n="navBtnShow" data-i18n-title="tipNavBtnShow"></span>
+        <input type="checkbox" id="set-fs-navbtn" />
+      </label>
+      <label>
+        <span data-i18n="delBtnShow" data-i18n-title="tipDelBtn"></span>
+        <input type="checkbox" id="set-fs-delbtn" />
+      </label>
+      </div>
+
+      <div class="spane hidden" id="pane-font">
+      <label>
+        <span data-i18n="fontSize" data-i18n-title="tipFontSize"></span>
+        <span class="font-size-wrap">
+          <input type="range" id="set-font-size" min="11" max="24" step="1" />
+          <span id="font-size-val"></span>
+        </span>
+      </label>
+      <label>
+        <span data-i18n="fontFamily"></span>
+        <select id="set-font-family">
+          <option value="Segoe UI" style="font-family:'Segoe UI'">Segoe UI</option>
+          <option value="Segoe UI Variable" style="font-family:'Segoe UI Variable'">Segoe UI Variable</option>
+          <option value="Arial" style="font-family:Arial">Arial</option>
+          <option value="Verdana" style="font-family:Verdana">Verdana</option>
+          <option value="Tahoma" style="font-family:Tahoma">Tahoma</option>
+          <option value="Calibri" style="font-family:Calibri">Calibri</option>
+          <option value="Georgia" style="font-family:Georgia">Georgia</option>
+          <option value="Times New Roman" style="font-family:'Times New Roman'">Times New Roman</option>
+          <option value="Consolas" style="font-family:Consolas">Consolas</option>
+          <option value="Cascadia Code" style="font-family:'Cascadia Code'">Cascadia Code</option>
+          <option value="Comic Sans MS" style="font-family:'Comic Sans MS'">Comic Sans MS</option>
+        </select>
+      </label>
+      <label>
+        <span data-i18n="fontWeight"></span>
+        <select id="set-font-weight">
+          <option value="400" data-i18n="fwNormal"></option>
+          <option value="600" data-i18n="fwSemi"></option>
+          <option value="700" data-i18n="fwBold"></option>
+        </select>
+      </label>
+      <div id="font-preview">Portez ce vieux whisky au juge blond qui fume. 0123456789 — AaBbCcÉéÀà</div>
+      </div>
+
+      <div class="spane hidden" id="pane-keys">
+      <input id="sc-search" type="text" data-i18n-ph="scSearch" spellcheck="false" />
+      <div id="shortcut-list"></div>
+      </div>
+
+      <div class="spane hidden" id="pane-cache">
+      <div class="cache-line"><span data-i18n="cacheThumbs"></span><span id="cs-thumbs">…</span></div>
+      <div class="cache-line"><span data-i18n="cachePreviews"></span><span id="cs-previews">…</span></div>
+      <div class="cache-line"><span data-i18n="cachePlay"></span><span id="cs-play">…</span></div>
+      <div class="cache-line cache-total"><span data-i18n="cacheTotal"></span><span id="cs-total">…</span></div>
+      <label>
+        <span data-i18n="cacheLimit" data-i18n-title="tipCacheLimit"></span>
+        <select id="set-cache-limit">
+          <option value="0" data-i18n="unlimited"></option>
+          <option value="5">5 Go</option>
+          <option value="10">10 Go</option>
+          <option value="20">20 Go</option>
+          <option value="40">40 Go</option>
+        </select>
+      </label>
+      <label>
+        <span data-i18n="clearPlayExit" data-i18n-title="tipClearPlayExit"></span>
+        <input type="checkbox" id="set-clear-play-exit" />
+      </label>
+      <button id="btn-clear-play" data-i18n="clearPlayNow"></button>
+      <button id="btn-clear-cache" data-i18n="clearCache"></button>
+      </div>
+
+      <button id="settings-close" data-i18n="close"></button>
+    </div>
+  </div>
+
+  <!-- Folder picker (copy / move to…) -->
+  <div id="picker" class="overlay hidden">
+    <div class="modal-panel">
+      <h2 data-i18n="ctxCopyMoveTo"></h2>
+      <div id="picker-tree"></div>
+      <div id="picker-dest">—</div>
+      <div class="modal-actions">
+        <button id="picker-copy" class="tb" data-i18n="ctxCopy"></button>
+        <button id="picker-move" class="tb" data-i18n="moveHere"></button>
+        <button id="picker-cancel" class="tb" data-i18n="cancel"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Batch conversion -->
+  <div id="convert-modal" class="overlay hidden">
+    <div class="modal-panel">
+      <h2><span data-i18n="ctxConvert"></span> (<span id="convert-count"></span>)</h2>
+      <label><span data-i18n="format"></span>
+        <select id="convert-format">
+          <option value="jpg">JPEG</option>
+          <option value="png">PNG</option>
+          <option value="webp">WebP</option>
+        </select>
+      </label>
+      <label><span data-i18n="quality"></span> <input id="convert-quality" type="range" min="10" max="100" value="85" /></label>
+      <label><span data-i18n="maxDim"></span> <input id="convert-maxdim" type="number" min="0" value="0" /> px</label>
+      <div id="convert-progress"></div>
+      <div class="modal-actions">
+        <button id="convert-go" class="tb" data-i18n="fApply"></button>
+        <button id="convert-cancel" class="tb" data-i18n="close"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Batch rename -->
+  <div id="rename-modal" class="overlay hidden">
+    <div class="modal-panel">
+      <h2 data-i18n="ctxRenameBatch"></h2>
+      <input id="rename-pattern" type="text" value="{nom}_{n}" spellcheck="false" />
+      <div class="hint" data-i18n="renameHint"></div>
+      <pre id="rename-preview"></pre>
+      <div class="modal-actions">
+        <button id="rename-go" class="tb" data-i18n="fApply"></button>
+        <button id="rename-cancel" class="tb" data-i18n="cancel"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Duplicates -->
+  <div id="dup-modal" class="overlay hidden">
+    <div class="modal-panel">
+      <h2 data-i18n="dupFind"></h2>
+      <div id="dup-list"></div>
+      <div class="modal-actions">
+        <button id="dup-delete" class="tb" data-i18n="dupDelete"></button>
+        <button id="dup-close" class="tb" data-i18n="close"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Side-by-side compare -->
+  <div id="compare" class="overlay hidden">
+    <div id="compare-panes"></div>
+    <button id="compare-close" class="ov-btn ov-close">✕</button>
+  </div>
+
+  <!-- Recursive thumbnail generation (non-blocking) -->
+  <div id="pregen-panel" class="hidden">
+    <div id="pregen-title"></div>
+    <div id="pregen-bar"><div id="pregen-fill"></div></div>
+    <div id="pregen-row">
+      <span id="pregen-detail"></span>
+      <button id="pregen-cancel" class="tb" data-i18n="cancel"></button>
+    </div>
+  </div>
+
+  <!-- Rotation progress: floating, never blocks browsing -->
+  <div id="rot-panel" class="hidden">
+    <div id="rot-title"></div>
+    <div id="rot-bar"><div id="rot-fill"></div></div>
+    <div id="rot-row">
+      <span id="rot-detail"></span>
+      <button id="rot-cancel" class="tb" data-i18n="cancel"></button>
+    </div>
+  </div>
+
+  <!-- Copy / move progress -->
+  <div id="paste-panel" class="hidden">
+    <div id="paste-title"></div>
+    <div id="paste-bar"><div id="paste-fill"></div></div>
+    <div id="paste-row">
+      <span id="paste-detail"></span>
+      <button id="paste-cancel" class="tb" data-i18n="cancel"></button>
+    </div>
+  </div>
+
+  <!-- Name clash on paste -->
+  <!-- Single-line text prompt (rename, new folder, keywords...): the native
+       prompt() sticks to the top of the window and cannot be styled. -->
+  <div id="input-modal" class="overlay dim hidden">
+    <div class="modal-panel input-panel">
+      <h2 id="input-title"></h2>
+      <input id="input-value" type="text" spellcheck="false" autocomplete="off" />
+      <div class="modal-actions">
+        <button id="input-ok" class="tb" data-i18n="ok"></button>
+        <button id="input-cancel" class="tb" data-i18n="cancel"></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="conflict-modal" class="overlay hidden">
+    <div class="modal-panel">
+      <h2 data-i18n="conflictTitle"></h2>
+      <div id="conflict-list"></div>
+      <div id="conflict-hint" class="hidden"></div>
+      <div class="modal-actions">
+        <button id="conflict-rename" class="tb" data-i18n="conflictKeepBoth"></button>
+        <button id="conflict-replace" class="tb" data-i18n="conflictReplace"></button>
+        <button id="conflict-skip" class="tb" data-i18n="conflictSkip"></button>
+        <button id="conflict-cancel" class="tb" data-i18n="cancel"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Properties -->
+  <div id="props-modal" class="overlay hidden">
+    <div class="modal-panel">
+      <h2 data-i18n="propsTitle"></h2>
+      <div id="props-body"></div>
+      <label><span data-i18n="attrReadonly"></span><input type="checkbox" id="props-readonly" /></label>
+      <label><span data-i18n="attrHidden"></span><input type="checkbox" id="props-hidden" /></label>
+      <div class="modal-actions">
+        <button id="props-copy-path" class="tb" data-i18n="copyPath"></button>
+        <button id="props-apply" class="tb" data-i18n="fApply"></button>
+        <button id="props-close" class="tb" data-i18n="close"></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="drag-ghost" class="hidden"></div>
+
+  <!-- Corner toast (folder wrap-around notice) -->
+  <div id="toast" class="hidden"></div>
+
+  <!-- Custom right-click menu (Windows 11 style) -->
+  <div id="ctx-menu" class="hidden"></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
