@@ -4758,12 +4758,11 @@ $<HTMLButtonElement>("btn-purge").onclick = () => {
   btn.disabled = true;
   void invoke("purge_orphans")
     .then((r) => {
-      const rep = r as { files: number; bytes: number; records: number; offline: number };
+      const rep = r as { files: number; bytes: number; records: number };
       const parts = [
         `${rep.files} ${t("filesSuffix")} (${fmtSize(rep.bytes)})`,
         `${rep.records} ${t("purgeRecords")}`,
       ];
-      if (rep.offline) parts.push(`${rep.offline} ${t("purgeOffline")}`);
       toast(`${t("purgeDone")} ${parts.join(", ")}`);
       void refreshCacheStats();
     })

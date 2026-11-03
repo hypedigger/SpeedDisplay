@@ -21,7 +21,7 @@
 - Ratings, colour labels, keywords, duplicate detection, search, lossless EXIF rotation, XMP sidecars
 - Favourites (with hidden ones), resolution / megapixel / ratio columns, capture date and camera in the properties
 - 24 themes, 6 languages, fully configurable shortcuts, persistent settings
-- **Cache housekeeping**: least-recently-used eviction, optional wipe of converted videos on exit, and removal of entries whose original file is gone (files on a disconnected drive are left alone)
+- **Cache housekeeping**: least-recently-used eviction, optional wipe of converted videos on exit, and removal of entries whose original file can no longer be found
 
 ## Setup (one time)
 

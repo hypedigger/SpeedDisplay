@@ -252,27 +252,11 @@ impl ThumbCache {
     }
 
     /// Drop what belongs to originals that no longer exist: thumbnails,
-    /// ffmpeg products, ratings and playback positions.
-    ///
-    /// A missing file is only treated as gone when its DRIVE is present. A
-    /// disconnected external disk makes every file on it look missing, and
-    /// purging then would wipe the ratings of a whole library that merely
-    /// sits in a drawer.
+    /// ffmpeg products, ratings and playback positions. A file on a drive that
+    /// is not connected counts as gone too - that is the user's choice.
     pub fn purge_orphans(&self) -> PurgeReport {
         let mut rep = PurgeReport::default();
-        let mut roots: std::collections::HashMap<PathBuf, bool> = Default::default();
-        let mut gone = |path: &str, rep: &mut PurgeReport| -> bool {
-            let p = Path::new(path);
-            if p.exists() {
-                return false;
-            }
-            let root = volume_root(p);
-            let present = *roots.entry(root.clone()).or_insert_with(|| root.exists());
-            if !present {
-                rep.offline += 1;
-            }
-            present
-        };
+        let gone = |path: &str, _rep: &mut PurgeReport| -> bool { !Path::new(path).exists() };
 
         let Ok(conn) = self.conn.lock() else { return rep };
 
@@ -432,21 +416,6 @@ pub struct PurgeReport {
     pub bytes: u64,
     /// Metadata rows (ratings, positions...) of originals that are gone.
     pub records: u64,
-    /// Entries left alone because their drive is not connected.
-    pub offline: u64,
-}
-
-/// The drive a path lives on: "E:\\" for a local path, "\\\\server\\share\\"
-/// for a network one. Its absence means "disconnected", not "deleted".
-fn volume_root(p: &Path) -> PathBuf {
-    let mut root = PathBuf::new();
-    for c in p.components() {
-        match c {
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => root.push(c),
-            _ => break,
-        }
-    }
-    root
 }
 
 /// User metadata attached to a file (rating, colour label, pick/reject, tags).
@@ -549,14 +518,13 @@ mod tests {
         assert_eq!(c.pos("E:/clip.mkv"), 0.0);
     }
 
-    /// Purging removes what belongs to deleted originals - and never touches
-    /// entries whose drive is merely disconnected.
+    /// Purging removes everything whose original cannot be found, including
+    /// files on a drive that is not connected, and keeps the rest.
     #[test]
-    fn purge_spares_disconnected_drives() {
+    fn purge_removes_every_missing_original() {
         let tmp = tempfile::tempdir().unwrap();
         let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
 
-        // An original that exists, and one that was deleted.
         let alive = tmp.path().join("alive.jpg");
         std::fs::write(&alive, b"x").unwrap();
         let deleted = tmp.path().join("deleted.jpg");
@@ -567,18 +535,16 @@ mod tests {
             c.put(&src.to_string_lossy(), 1, 1, 256, &thumb.to_string_lossy(), 10, 10);
             c.set_meta(&src.to_string_lossy(), &parent, Some(5), None, None, None, None);
         }
-        // A file on a drive that is not connected right now.
-        let offline = "Q:\\NotPluggedIn\\holiday.jpg";
-        c.set_meta(offline, "Q:\\NotPluggedIn", Some(4), None, None, None, None);
+        // A drive that is not plugged in: unreachable means gone.
+        c.set_meta("Q:\\NotPluggedIn\\holiday.jpg", "Q:\\NotPluggedIn", Some(4), None, None, None, None);
 
         let rep = c.purge_orphans();
 
-        assert_eq!(rep.files, 1, "only the deleted original's thumbnail goes");
-        assert_eq!(rep.records, 1, "only the deleted original's rating goes");
-        assert!(rep.offline >= 1, "the disconnected drive is reported, not purged");
-        assert!(c.dir.join("thumbs").join("a.jpg").exists());
+        assert_eq!(rep.files, 1, "the deleted original's thumbnail goes");
+        assert_eq!(rep.records, 2, "its rating goes, and so does the unplugged one");
+        assert!(c.dir.join("thumbs").join("a.jpg").exists(), "the live file is kept");
         assert!(!c.dir.join("thumbs").join("d.jpg").exists());
-        assert_eq!(c.dir_meta("Q:\\NotPluggedIn")[0].rating, 4, "offline rating kept");
+        assert!(c.dir_meta("Q:\\NotPluggedIn").is_empty());
         assert_eq!(c.dir_meta(&parent).len(), 1, "the live file keeps its rating");
     }
 
