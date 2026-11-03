@@ -308,6 +308,8 @@ let takenMap = new Map<string, number>(); // src path -> EXIF capture time (ms)
 let dimsMap = new Map<string, [number, number]>(); // src path -> pixel size
 let currentGen = 0;
 const thumbFailed = new Set<string>(); // no thumbnail possible: not asked again
+let lastThumbAt = "";                     // scroll|size|view of the running request
+let lastThumbPaths = new Set<string>();   // ...and what it was asked for
 let selectedIndex = -1;                   // focused item (keyboard anchor)
 let selected = new Set<number>();         // multi-selection (indexes in visible)
 let selAnchor = -1;                       // shift-click range anchor
@@ -1047,6 +1049,7 @@ async function openDir(path: string): Promise<boolean> {
     const list = (await invoke("list_dir", { path })) as Entry[];
     if (seq !== navSeq) return false; // a newer navigation superseded this one
     thumbFailed.clear(); // reopening a folder gives damaged files another try
+    lastThumbPaths.clear();
     if (!navSuppress && normPath(navHistory[navPos] ?? "") !== normPath(path)) {
       navHistory = navHistory.slice(0, navPos + 1);
       navHistory.push(path);
@@ -1385,7 +1388,9 @@ async function ensureCaptureDates(): Promise<void> {
 let dimsPending = false;
 async function ensureDims(): Promise<void> {
   if (dimsPending) return;
+  const [from, to] = sortNeedsDims() ? [0, visible.length] : visibleRange();
   const missing = visible
+    .slice(from, to)
     .filter((e) => (e.kind === "image" || e.kind === "raw") && !dimsMap.has(e.path))
     .map((e) => e.path);
   if (!missing.length) return;
@@ -1467,7 +1472,16 @@ function requestThumbs(): void {
   const items = order
     .filter((e) => e.kind !== "dir" && e.kind !== "other" && !thumbs.has(e.path) && !thumbFailed.has(e.path))
     .map((e) => ({ path: e.path, kind: e.kind, ext: e.ext }));
+  if (needsDims()) void ensureDims(); // the rows that just came into view
   if (!items.length) return;
+  // The recursive search repaints every 150 ms while it walks the tree. A new
+  // request cancels the one running, so re-sending the same screen each time
+  // restarted it over and over and the disk never got past the first rows.
+  // Same place, same size, nothing new to ask: let the running one finish.
+  const at = `${gridWrap.scrollTop}|${thumbTargetPx()}|${settings.view}`;
+  if (at === lastThumbAt && items.every((i) => lastThumbPaths.has(i.path))) return;
+  lastThumbAt = at;
+  lastThumbPaths = new Set(items.map((i) => i.path));
   void invoke("request_thumbs", { items, tsize: thumbTargetPx() }).then((g) => {
     currentGen = g as number;
   });
@@ -2320,6 +2334,7 @@ async function pasteInto(paths: string[], dest: string, cut: boolean): Promise<v
     // Our own thumbnail workers hold the files open, and Windows will not
     // rename a folder whose files are in use: let them go first.
     await invoke("cancel_thumb_work").catch(() => {});
+    lastThumbPaths.clear(); // that request is gone: the next one must be sent
     pregenBusy = false;
     $("pregen-panel").classList.add("hidden");
   }
@@ -3991,13 +4006,14 @@ const COLUMNS: Column[] = [
   { id: "ratio", label: "colRatio", sort: "ratio" },
 ];
 /** True when a column needing pixel sizes is on screen or drives the sort. */
+/** Sorting by resolution or ratio needs every size; the columns only exist
+ *  in the details view, and only need the rows around the screen. */
+const sortNeedsDims = () => settings.sortOrder.startsWith("res-") || settings.sortOrder.startsWith("ratio-");
 function needsDims(): boolean {
   return (
-    settings.columns.res === true ||
-    settings.columns.mpx === true ||
-    settings.columns.ratio === true ||
-    settings.sortOrder.startsWith("res-") ||
-    settings.sortOrder.startsWith("ratio-")
+    sortNeedsDims() ||
+    (settings.view !== "grid" &&
+      (settings.columns.res === true || settings.columns.mpx === true || settings.columns.ratio === true))
   );
 }
 function shownColumns(): Column[] {
@@ -4901,6 +4917,7 @@ $<HTMLButtonElement>("btn-clear-cache").onclick = () => {
   invoke("clear_cache").then(() => {
     thumbs.clear();
     thumbFailed.clear();
+    lastThumbPaths.clear();
     previews.clear();
     void refreshCacheStats();
     refresh();
@@ -5250,6 +5267,7 @@ function rotateTargets(delta: number, reset = false): void {
 function bustAsset(path: string): void {
   thumbs.delete(path);
   thumbFailed.delete(path);
+  lastThumbPaths.delete(path);
   hdCache.delete(path);
   hdUrls.delete(path);
   assetBust.set(path, (assetBust.get(path) ?? 0) + 1);

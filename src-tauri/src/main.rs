@@ -724,16 +724,33 @@ fn write_xmp(path: String, rating: i64, label: String, tags: String) -> Result<(
     .map_err(|e| e.to_string())
 }
 
+/// Pool for the per-file metadata reads (sizes, capture dates, durations,
+/// sidecars). On the global pool, a recursive view of ten thousand files
+/// asked for its sizes kept every core and the disk busy, and the
+/// thumbnails on screen waited behind it. Four threads leave the rest to them.
+fn meta_pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .thread_name(|i| format!("meta-{i}"))
+            .build()
+            .expect("metadata thread pool")
+    })
+}
+
 /// Read the sidecars of a folder, so ratings written by Lightroom & co.
 /// show up here too.
 #[tauri::command]
 async fn read_xmp(paths: Vec<String>) -> Result<Vec<(String, lumen_core::xmp::XmpMeta)>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use rayon::prelude::*;
-        Ok(paths
-            .par_iter()
-            .filter_map(|p| lumen_core::xmp::read(Path::new(p)).map(|m| (p.clone(), m)))
-            .collect())
+        Ok(meta_pool().install(|| {
+            paths
+                .par_iter()
+                .filter_map(|p| lumen_core::xmp::read(Path::new(p)).map(|m| (p.clone(), m)))
+                .collect()
+        }))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -937,18 +954,20 @@ async fn video_durations(
     let ffmpeg = state.ffmpeg.clone();
     tauri::async_runtime::spawn_blocking(move || {
         use rayon::prelude::*;
-        Ok(paths
-            .par_iter()
-            .map(|p| {
-                let known = cache.dur(p);
-                if known != 0.0 {
-                    return (p.clone(), known);
-                }
-                let d = ffmpeg.duration(Path::new(p)).unwrap_or(0.0);
-                cache.set_dur(p, &parent, d);
-                (p.clone(), d)
-            })
-            .collect())
+        Ok(meta_pool().install(|| {
+            paths
+                .par_iter()
+                .map(|p| {
+                    let known = cache.dur(p);
+                    if known != 0.0 {
+                        return (p.clone(), known);
+                    }
+                    let d = ffmpeg.duration(Path::new(p)).unwrap_or(0.0);
+                    cache.set_dur(p, &parent, d);
+                    (p.clone(), d)
+                })
+                .collect()
+        }))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -971,29 +990,31 @@ async fn capture_dates(
     let cache = state.cache.clone();
     tauri::async_runtime::spawn_blocking(move || {
         use rayon::prelude::*;
-        let out: Vec<(String, i64)> = paths
-            .par_iter()
-            .map(|p| {
-                let known = cache.taken(p);
-                if known != 0 {
-                    return (p.clone(), known);
-                }
-                let taken = lumen_core::exifwrite::capture_time(Path::new(p));
-                // Fall back to the file date so sorting never collapses.
-                let value = if taken != 0 {
-                    taken
-                } else {
-                    std::fs::metadata(p)
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as i64)
-                        .unwrap_or(0)
-                };
-                cache.set_taken(p, &parent, value);
-                (p.clone(), value)
-            })
-            .collect();
+        let out: Vec<(String, i64)> = meta_pool().install(|| {
+            paths
+                .par_iter()
+                .map(|p| {
+                    let known = cache.taken(p);
+                    if known != 0 {
+                        return (p.clone(), known);
+                    }
+                    let taken = lumen_core::exifwrite::capture_time(Path::new(p));
+                    // Fall back to the file date so sorting never collapses.
+                    let value = if taken != 0 {
+                        taken
+                    } else {
+                        std::fs::metadata(p)
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0)
+                    };
+                    cache.set_taken(p, &parent, value);
+                    (p.clone(), value)
+                })
+                .collect()
+        });
         Ok(out)
     })
     .await
@@ -1054,12 +1075,14 @@ async fn photo_info(path: String) -> PhotoInfo {
 async fn image_sizes(paths: Vec<String>) -> Result<Vec<(String, u32, u32)>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use rayon::prelude::*;
-        Ok(paths
-            .par_iter()
-            .filter_map(|p| {
-                lumen_core::image_dims(Path::new(p)).map(|(w, h)| (p.clone(), w, h))
-            })
-            .collect())
+        Ok(meta_pool().install(|| {
+            paths
+                .par_iter()
+                .filter_map(|p| {
+                    lumen_core::image_dims(Path::new(p)).map(|(w, h)| (p.clone(), w, h))
+                })
+                .collect()
+        }))
     })
     .await
     .map_err(|e| e.to_string())?
