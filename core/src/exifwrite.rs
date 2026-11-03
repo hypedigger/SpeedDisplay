@@ -119,6 +119,13 @@ pub fn set_orientation(path: &Path, orientation: u16) -> std::io::Result<bool> {
 
 /// Capture time (EXIF DateTimeOriginal) as UNIX milliseconds, 0 if absent.
 pub fn capture_time(path: &Path) -> i64 {
+    // TIFF-based files (every raw format we know, plus TIFF itself) are read
+    // ENTIRELY into memory by the EXIF crate - 25 to 60 MB per raw, just to
+    // pick out a 20-byte date. Sorting a folder of raws by capture time meant
+    // reading every byte of every file. Walk the two IFDs by hand instead.
+    if let Some(ms) = tiff_capture_time(path) {
+        return ms;
+    }
     let Ok(file) = std::fs::File::open(path) else { return 0 };
     let mut r = std::io::BufReader::new(file);
     let Ok(d) = exif::Reader::new().read_from_container(&mut r) else { return 0 };
@@ -134,6 +141,61 @@ pub fn capture_time(path: &Path) -> i64 {
         }
     }
     0
+}
+
+/// Capture time of a TIFF-based file, reading only the few hundred bytes it
+/// takes: IFD0, then the Exif sub-IFD it points to. None when the file is not
+/// TIFF-based, so the caller falls back to the generic reader.
+fn tiff_capture_time(path: &Path) -> Option<i64> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut hdr = [0u8; 8];
+    f.read_exact(&mut hdr).ok()?;
+    let le = match &hdr[0..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    let ifd0 = rd_u32(&hdr[4..8], le) as u64;
+
+    // Read the entries of one IFD as (tag, type, count, value-or-offset).
+    let mut entries = |off: u64| -> Option<Vec<(u16, u16, u32, u32)>> {
+        f.seek(SeekFrom::Start(off)).ok()?;
+        let mut cnt = [0u8; 2];
+        f.read_exact(&mut cnt).ok()?;
+        let n = rd_u16(&cnt, le).min(512) as usize;
+        let mut raw = vec![0u8; n * 12];
+        f.read_exact(&mut raw).ok()?;
+        Some(
+            raw.chunks_exact(12)
+                .map(|e| (rd_u16(&e[0..2], le), rd_u16(&e[2..4], le), rd_u32(&e[4..8], le), rd_u32(&e[8..12], le)))
+                .collect(),
+        )
+    };
+    let ifd0_entries = entries(ifd0)?;
+    let exif_ifd = ifd0_entries.iter().find(|e| e.0 == 0x8769).map(|e| e.3 as u64);
+    let modify_date = ifd0_entries.iter().find(|e| e.0 == 0x0132).copied();
+    let exif_entries = exif_ifd.and_then(|o| entries(o)).unwrap_or_default();
+
+    // DateTimeOriginal, then DateTimeDigitized, then the file's DateTime.
+    let candidates = [
+        exif_entries.iter().find(|e| e.0 == 0x9003).copied(),
+        exif_entries.iter().find(|e| e.0 == 0x9004).copied(),
+        modify_date,
+    ];
+    for (_, typ, count, at) in candidates.into_iter().flatten() {
+        if typ != 2 || count < 19 || count > 64 {
+            continue; // not the ASCII date we expect
+        }
+        let mut buf = vec![0u8; count as usize];
+        if f.seek(SeekFrom::Start(at as u64)).is_err() || f.read_exact(&mut buf).is_err() {
+            continue;
+        }
+        if let Some(ms) = parse_exif_datetime(&buf) {
+            return Some(ms);
+        }
+    }
+    // A TIFF without any date: say so, rather than loading the whole file.
+    Some(0)
 }
 
 /// "YYYY:MM:DD HH:MM:SS" -> UNIX milliseconds (local time, as EXIF stores
@@ -193,6 +255,63 @@ pub fn rotate_orientation(current: u16, quarters: i32) -> u16 {
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    /// Compare the hand walker with the EXIF crate on a real file (SD_PROBE).
+    #[test]
+    #[ignore]
+    fn probe_capture_time() {
+        let Ok(p) = std::env::var("SD_PROBE") else { return };
+        let p = std::path::Path::new(&p);
+        let t = std::time::Instant::now();
+        let fast = tiff_capture_time(p);
+        let t_fast = t.elapsed();
+        let t = std::time::Instant::now();
+        let file = std::fs::File::open(p).unwrap();
+        let mut r = std::io::BufReader::new(file);
+        let slow = exif::Reader::new().read_from_container(&mut r).ok().and_then(|d| {
+            d.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY).and_then(|f| match f.value {
+                exif::Value::Ascii(ref v) => v.first().and_then(|b| parse_exif_datetime(b)),
+                _ => None,
+            })
+        });
+        println!("walker {:?} in {:?} | crate {:?} in {:?}", fast, t_fast, slow, t.elapsed());
+        assert_eq!(fast, slow, "the walker must agree with the crate");
+    }
+
+    /// The hand-written walker must find DateTimeOriginal in the Exif
+    /// sub-IFD - the layout of every raw file - without the EXIF crate.
+    #[test]
+    fn tiff_capture_time_reads_the_exif_sub_ifd() {
+        // Header, IFD0 with one entry (ExifIFD pointer), Exif IFD with one
+        // entry (DateTimeOriginal, ASCII, 20 bytes, stored at an offset).
+        let mut b = Vec::new();
+        b.extend(b"II*\0");
+        b.extend(8u32.to_le_bytes()); // IFD0 at 8
+        b.extend(1u16.to_le_bytes()); // one entry
+        b.extend(0x8769u16.to_le_bytes());
+        b.extend(4u16.to_le_bytes()); // LONG
+        b.extend(1u32.to_le_bytes());
+        b.extend(26u32.to_le_bytes()); // Exif IFD at 26
+        b.extend(0u32.to_le_bytes()); // no next IFD
+        assert_eq!(b.len(), 26);
+        b.extend(1u16.to_le_bytes());
+        b.extend(0x9003u16.to_le_bytes());
+        b.extend(2u16.to_le_bytes()); // ASCII
+        b.extend(20u32.to_le_bytes());
+        b.extend(44u32.to_le_bytes()); // value at 44
+        b.extend(0u32.to_le_bytes());
+        assert_eq!(b.len(), 44);
+        b.extend(b"2014:05:12 18:34:07\0");
+        b.extend(vec![0u8; 4096]); // a body the walker must never need
+
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("synthetic.arw");
+        std::fs::write(&p, &b).unwrap();
+
+        let ms = capture_time(&p);
+        let expected = parse_exif_datetime(b"2014:05:12 18:34:07").unwrap();
+        assert_eq!(ms, expected);
+    }
 
     /// Minimal little-endian TIFF carrying an Orientation tag set to 1.
     fn fake_tiff() -> Vec<u8> {

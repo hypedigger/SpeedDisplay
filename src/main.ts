@@ -29,6 +29,8 @@ interface Meta {
   rot: number;
   /** Where playback of this video stopped, in seconds. 0 = from the start. */
   pos: number;
+  /** Total length in seconds (videos), 0 when never probed. */
+  dur: number;
 }
 
 interface Settings {
@@ -42,7 +44,7 @@ interface Settings {
   startMode: "last" | "fixed";
   startPath: string;
   /** Pinned folders shown at the top of the sidebar. */
-  favorites: { name: string; path: string }[];
+  favorites: { name: string; path: string; hidden?: boolean }[];
   /** Viewer fit mode: fit both / fit width / fit height / actual size. */
   fitMode: "fit" | "fitW" | "fitH" | "actual";
   /** Shrink images larger than the screen (ACDSee "reduce"). */
@@ -61,6 +63,12 @@ interface Settings {
   cacheLimitGb: number;
   /** Wipe the converted videos and full previews when the app closes. */
   clearPlayOnExit: boolean;
+  /** Viewer layout: one picture, two side by side, or two with the first
+   *  one alone as a cover page (like a PDF reader). */
+  spread: "single" | "double" | "cover";
+  /** Size of the Options window, 0 = default. Kept across sessions. */
+  optW: number;
+  optH: number;
   /** Scrollbar width, percent of the 10px base (100-500). */
   scrollbarPct: number;
   /** Keep zoom & fit when moving between images. */
@@ -213,6 +221,9 @@ const DEFAULTS: Settings = {
   fontWeight: "400",
   cacheLimitGb: 20,
   clearPlayOnExit: false,
+  optW: 0,
+  optH: 0,
+  spread: "single",
   scrollbarPct: 200,
   keepZoom: false,
   loopNav: true,
@@ -334,7 +345,16 @@ function scrollToIndex(i: number): void {
     }
     layoutGrid();
   } else {
-    listBody.children[i]?.scrollIntoView({ block: "nearest" });
+    // The row may well be outside the virtual window: aim at its position.
+    const h = rowH();
+    const top = i * h;
+    const bottom = top + h;
+    if (top < gridWrap.scrollTop) {
+      gridWrap.scrollTop = top;
+    } else if (bottom > gridWrap.scrollTop + gridWrap.clientHeight) {
+      gridWrap.scrollTop = bottom - gridWrap.clientHeight;
+    }
+    layoutList();
   }
 }
 
@@ -421,6 +441,85 @@ function mediaList(): Entry[] {
   return visible.filter((e) => e.kind !== "dir" && e.kind !== "other");
 }
 
+// ---------- Language picker with flags ----------
+// Windows draws no flag emoji (they come out as two letters), and a native
+// <option> cannot hold a picture: hence this small picker with SVG flags.
+// The hidden <select> stays the source of truth, so nothing else changes.
+const FLAGS: Record<string, string> = {
+  fr: '<rect width="3" height="2" fill="#EF4135"/><rect width="2" height="2" fill="#fff"/><rect width="1" height="2" fill="#0055A4"/>',
+  it: '<rect width="3" height="2" fill="#CE2B37"/><rect width="2" height="2" fill="#fff"/><rect width="1" height="2" fill="#009246"/>',
+  es: '<rect width="3" height="2" fill="#AA151B"/><rect y="0.5" width="3" height="1" fill="#F1BF00"/>',
+  ru: '<rect width="3" height="2" fill="#D52B1E"/><rect width="3" height="1.333" fill="#0039A6"/><rect width="3" height="0.667" fill="#fff"/>',
+  "pt-BR":
+    '<rect width="3" height="2" fill="#009C3B"/><path d="M1.5 0.22 2.78 1 1.5 1.78 0.22 1Z" fill="#FFDF00"/><circle cx="1.5" cy="1" r="0.42" fill="#002776"/>',
+  en:
+    '<rect width="3" height="2" fill="#012169"/><path d="M0 0 3 2M3 0 0 2" stroke="#fff" stroke-width="0.4"/><path d="M0 0 3 2M3 0 0 2" stroke="#C8102E" stroke-width="0.16"/><path d="M1.5 0V2M0 1H3" stroke="#fff" stroke-width="0.6"/><path d="M1.5 0V2M0 1H3" stroke="#C8102E" stroke-width="0.34"/>',
+};
+function flagSvg(code: string): string {
+  return `<svg class="flag" viewBox="0 0 3 2" preserveAspectRatio="none" aria-hidden="true">${FLAGS[code] ?? ""}</svg>`;
+}
+
+function buildLangPicker(): void {
+  const sel = $<HTMLSelectElement>("set-lang");
+  if (document.getElementById("lang-picker")) return;
+  sel.hidden = true;
+
+  const wrap = document.createElement("div");
+  wrap.id = "lang-picker";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.id = "lang-btn";
+  const list = document.createElement("div");
+  list.id = "lang-list";
+  list.hidden = true;
+
+  for (const opt of Array.from(sel.options)) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "lang-item";
+    item.dataset.code = opt.value;
+    item.innerHTML = flagSvg(opt.value) + "<span></span>";
+    (item.lastElementChild as HTMLElement).textContent = opt.text;
+    item.onclick = () => {
+      list.hidden = true;
+      if (sel.value === opt.value) return;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event("change"));
+    };
+    list.appendChild(item);
+  }
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    list.hidden = !list.hidden;
+  };
+  // Click anywhere else, or Escape, closes the list.
+  document.addEventListener("mousedown", (ev) => {
+    if (!wrap.contains(ev.target as Node)) list.hidden = true;
+  });
+  wrap.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      list.hidden = true;
+      ev.stopPropagation();
+    }
+  });
+  wrap.append(btn, list);
+  sel.after(wrap);
+  updateLangButton();
+}
+
+/** Mirror the current language on the picker's face. */
+function updateLangButton(): void {
+  const btn = document.getElementById("lang-btn");
+  const sel = $<HTMLSelectElement>("set-lang");
+  if (!btn) return;
+  const opt = sel.options[sel.selectedIndex];
+  btn.innerHTML = flagSvg(sel.value) + "<span></span>" + '<span class="lang-caret">▾</span>';
+  (btn.children[1] as HTMLElement).textContent = opt ? opt.text : sel.value;
+  document.querySelectorAll<HTMLElement>(".lang-item").forEach((it) => {
+    it.classList.toggle("current", it.dataset.code === sel.value);
+  });
+}
+
 // ---------- Settings ----------
 async function loadSettings(): Promise<void> {
   const saved = (await invoke("get_settings")) as Partial<Settings>;
@@ -446,6 +545,8 @@ function applySettings(): void {
   document.documentElement.dataset.theme = settings.theme;
   setLang(settings.lang);
   $<HTMLSelectElement>("set-lang").value = settings.lang;
+  buildLangPicker();
+  updateLangButton();
   buildThemeOptions();
   $<HTMLSelectElement>("set-theme").value = settings.theme;
   $<HTMLSelectElement>("set-preview").value = settings.previewMode;
@@ -464,6 +565,7 @@ function applySettings(): void {
   $<HTMLInputElement>("set-custom-vid").value = settings.customVidExts;
   $<HTMLSelectElement>("set-cache-limit").value = String(settings.cacheLimitGb);
   $<HTMLInputElement>("set-clear-play-exit").checked = settings.clearPlayOnExit;
+  applyOptSize();
   // The backend does the wiping, on the window-destroyed event.
   void invoke("set_clear_play_on_exit", { on: settings.clearPlayOnExit }).catch(() => {});
   document.documentElement.style.setProperty(
@@ -496,6 +598,7 @@ function applySettings(): void {
   document.documentElement.style.setProperty("--sidebar-w", `${settings.sidebarWidth}px`);
   updateViewButton();
   syncKindSeg();
+  syncSpreadSeg();
   $("btn-allfiles").classList.toggle("fav-on", settings.showAllFiles);
   applyFont();
   applyVtButtons();
@@ -536,6 +639,7 @@ function enforceCacheLimit(): void {
 }
 
 function applyFont(): void {
+  forgetRowHeight(); // the details rows grow and shrink with the text
   const root = document.documentElement.style;
   root.setProperty("--ui-font-size", `${settings.fontSize}px`);
   root.setProperty("--ui-font-family", `"${settings.fontFamily}"`);
@@ -583,14 +687,32 @@ function toggleFavorite(path: string): void {
   buildFavorites();
   updateFavButton();
 }
+/** Discreet favourites stay out of the list until the header is clicked.
+ *  Session-only on purpose: they are hidden again at the next start. */
+let showHiddenFavs = false;
+
 function buildFavorites(): void {
   const favs = $<HTMLDivElement>("favorites");
   const sep = $<HTMLDivElement>("fav-sep");
   favs.innerHTML = "";
   sep.classList.toggle("hidden", !settings.favorites.length);
+
+  const hiddenCount = settings.favorites.filter((f) => f.hidden).length;
+  // The header is the switch, and says so only when there is something to show.
+  sep.classList.toggle("has-hidden", hiddenCount > 0);
+  sep.classList.toggle("revealing", showHiddenFavs && hiddenCount > 0);
+  sep.title = ""; // the star speaks for itself
+  sep.onclick = hiddenCount
+    ? () => {
+        showHiddenFavs = !showHiddenFavs;
+        buildFavorites();
+      }
+    : null;
+
   for (const f of settings.favorites) {
+    if (f.hidden && !showHiddenFavs) continue;
     const el = document.createElement("div");
-    el.className = "side-item fav-item";
+    el.className = "side-item fav-item" + (f.hidden ? " fav-hidden" : "");
     el.title = f.path;
     const star = document.createElement("span");
     star.className = "fav-star";
@@ -626,6 +748,15 @@ function buildFavorites(): void {
         ctxMenu.appendChild(d);
       };
       mk(t("ctxOpen"), () => void openDir(f.path));
+      mk(f.hidden ? t("favUnhide") : t("favHide"), () => {
+        const fav = settings.favorites.find((x) => normPath(x.path) === normPath(f.path));
+        if (!fav) return;
+        fav.hidden = !fav.hidden;
+        saveSettings();
+        // Reveal the section so the item does not simply vanish.
+        if (fav.hidden) showHiddenFavs = true;
+        buildFavorites();
+      });
       mk(t("favRemove"), () => toggleFavorite(f.path));
       mk(t("ctxReveal"), () => void invoke("reveal", { path: f.path }));
       positionCtx(ev);
@@ -935,13 +1066,13 @@ function remapCustomExts(list: Entry[]): Entry[] {
 
 interface MetaRowDto {
   path: string; rating: number; color: string; flag: string; tags: string; rot: number;
-  pos: number;
+  pos: number; dur: number;
 }
 function mergeMetaRows(rows: MetaRowDto[]): void {
   for (const r of rows) {
     metaMap.set(r.path, {
       rating: r.rating, color: r.color, flag: r.flag, tags: r.tags, rot: r.rot ?? 0,
-      pos: r.pos ?? 0,
+      pos: r.pos ?? 0, dur: r.dur ?? 0,
     });
   }
 }
@@ -963,7 +1094,9 @@ async function loadMetaForParents(list: Entry[]): Promise<void> {
 }
 
 function metaOf(path: string): Meta {
-  return metaMap.get(path) ?? { rating: 0, color: "", flag: "", tags: "", rot: 0, pos: 0 };
+  return (
+    metaMap.get(path) ?? { rating: 0, color: "", flag: "", tags: "", rot: 0, pos: 0, dur: 0 }
+  );
 }
 // Adobe's colour label vocabulary, so Lightroom & Bridge understand ours.
 const LABEL_NAMES: Record<string, string> = {
@@ -1253,18 +1386,72 @@ function fmtRatio(w: number, h: number): string {
   return r.toFixed(2).replace(".", ",") + (portrait ? " ↕" : " ↔");
 }
 
+/** Index range currently on screen, whichever view is active, widened by a
+ *  couple of screens so scrolling meets thumbnails that are already there. */
+function visibleRange(): [number, number] {
+  const viewH = gridWrap.clientHeight || 600;
+  const top = gridWrap.scrollTop;
+  if (settings.view === "grid") {
+    const rowH = gridRowH || 160;
+    const cols = Math.max(1, gridCols);
+    const firstRow = Math.max(0, Math.floor(top / rowH) - 2);
+    const lastRow = Math.ceil((top + viewH * 3) / rowH);
+    return [firstRow * cols, Math.min(visible.length, lastRow * cols)];
+  }
+  const h = rowH();
+  const first = Math.max(0, Math.floor(top / h) - 10);
+  const last = Math.ceil((top + viewH * 3) / h);
+  return [first, Math.min(visible.length, last)];
+}
+
+/** Ask the backend for the thumbnails around the viewport, and only those.
+ *  Queueing a whole folder meant 20 000 decodes for thirty visible cells:
+ *  scrolling into the middle had to wait for everything before it. */
 function requestThumbs(): void {
+  const [from, to] = visibleRange();
   const items = visible
-    .filter((e) => e.kind !== "dir" && e.kind !== "other")
+    .slice(from, to)
+    .filter((e) => e.kind !== "dir" && e.kind !== "other" && !thumbs.has(e.path))
     .map((e) => ({ path: e.path, kind: e.kind, ext: e.ext }));
   if (!items.length) return;
   void invoke("request_thumbs", { items, tsize: thumbTargetPx() }).then((g) => {
     currentGen = g as number;
   });
   if (settings.previewMode === "pregen") {
-    pregenQueue = visible.filter((e) => e.kind === "video").map((e) => e.path);
+    pregenQueue = visible.slice(from, to).filter((e) => e.kind === "video").map((e) => e.path);
     pumpPregen();
   }
+  void ensureDurations(from, to);
+}
+
+/** Durations for the videos on screen, memoised in the cache database. */
+let durPending = false;
+async function ensureDurations(from: number, to: number): Promise<void> {
+  if (durPending || !currentPath) return;
+  const missing = visible
+    .slice(from, to)
+    .filter((e) => e.kind === "video" && !metaOf(e.path).dur)
+    .map((e) => e.path);
+  if (!missing.length) return;
+  durPending = true;
+  try {
+    const rows = (await invoke("video_durations", {
+      paths: missing,
+      parent: currentPath,
+    })) as [string, number][];
+    for (const [path, d] of rows) metaMap.set(path, { ...metaOf(path), dur: d });
+    repaint();
+  } finally {
+    durPending = false;
+  }
+}
+
+/** Scrolling brings new cells into view: fetch what they need, debounced so a
+ *  flick of the wheel does not fire a dozen batches. */
+let visThumbTimer = 0;
+function requestVisibleThumbs(): void {
+  window.clearTimeout(visThumbTimer);
+  visThumbTimer = window.setTimeout(requestThumbs, 90);
 }
 function thumbTargetPx(): number {
   // Account for HiDPI so thumbs stay sharp.
@@ -1445,7 +1632,15 @@ function hydrateCell(el: HTMLDivElement, e: Entry): void {
     if (e.kind === "video" || e.kind === "raw") {
       const b = document.createElement("div");
       b.className = "badge";
-      b.textContent = e.kind === "video" ? "▶ " + e.ext.toUpperCase() : e.ext.toUpperCase();
+      // The length says more than the container format; fall back to the
+      // extension until ffprobe has answered for this file.
+      const d = metaOf(e.path).dur;
+      b.textContent =
+        e.kind === "video"
+          ? d > 0
+            ? "▶ " + fmtClock(d)
+            : "▶ " + e.ext.toUpperCase()
+          : e.ext.toUpperCase();
       box.appendChild(b);
     }
   } else if (!box.querySelector(".ph")) {
@@ -1514,49 +1709,106 @@ function hoverStop(el: HTMLDivElement, e: Entry): void {
 }
 
 // ---------- List view ----------
-function layoutList(): void {
-  listBody.innerHTML = "";
-  visible.forEach((e, i) => {
-    const tr = document.createElement("tr");
-    tr.title = e.path;
-    // A folder row is a drop target, exactly like a folder cell in the grid.
-    tr.dataset.path = e.path;
-    if (e.kind === "dir") tr.dataset.dir = "1";
-    tr.classList.toggle("selected", selected.has(i) || i === selectedIndex);
-    tr.classList.toggle("cut", isCut(e.path));
-    const icon = e.kind === "dir" ? "📁 " : e.kind === "video" ? "🎬 " : e.kind === "other" ? "📄 " : "🖼 ";
-    for (const c of shownColumns()) {
-      const td = document.createElement("td");
-      if (c.id === "name") {
-        td.textContent = icon + e.name;
-      } else if (c.id === "color") {
-        td.textContent = columnValue(c, e);
-        td.style.color = metaOf(e.path).color || "inherit";
-        td.style.textAlign = "center";
-      } else {
-        td.textContent = columnValue(c, e);
-      }
-      tr.appendChild(td);
+/** Height of one details-view row. Measured rather than hard-coded: the text
+ *  size is a user setting, so the value changes with the font options. */
+let rowHeight = 0;
+function rowH(): number {
+  if (rowHeight) return rowHeight;
+  if (!visible.length) return 29;
+  const probe = makeListRow(visible[0], 0);
+  listBody.appendChild(probe);
+  rowHeight = probe.offsetHeight || 29;
+  probe.remove();
+  return rowHeight;
+}
+/** The font settings changed: the next layout measures again. */
+function forgetRowHeight(): void {
+  rowHeight = 0;
+}
+
+/** Build one row of the details view. */
+function makeListRow(e: Entry, i: number): HTMLTableRowElement {
+  const tr = document.createElement("tr");
+  tr.title = e.path;
+  // A folder row is a drop target, exactly like a folder cell in the grid.
+  tr.dataset.path = e.path;
+  if (e.kind === "dir") tr.dataset.dir = "1";
+  tr.classList.toggle("selected", selected.has(i) || i === selectedIndex);
+  tr.classList.toggle("cut", isCut(e.path));
+  const icon =
+    e.kind === "dir"
+      ? "\u{1f4c1} "
+      : e.kind === "video"
+        ? "\u{1f3ac} "
+        : e.kind === "other"
+          ? "\u{1f4c4} "
+          : "\u{1f5bc} ";
+  for (const c of shownColumns()) {
+    const td = document.createElement("td");
+    if (c.id === "name") {
+      td.textContent = icon + e.name;
+    } else if (c.id === "color") {
+      td.textContent = columnValue(c, e);
+      td.style.color = metaOf(e.path).color || "inherit";
+      td.style.textAlign = "center";
+    } else {
+      td.textContent = columnValue(c, e);
     }
-    tr.onmousedown = (ev) => {
-      treeFocus = false;
-      beginDragCandidate(ev, e, i);
-    };
-    tr.ondragstart = (ev) => ev.preventDefault();
-    tr.onclick = (ev) => {
-      if (dragging) return;
-      setFocus(i, { ctrl: ev.ctrlKey, shift: ev.shiftKey });
-      layoutList();
-    };
-    tr.ondblclick = () => activate(e);
-    tr.oncontextmenu = (ev) => {
-      ev.stopPropagation();
-      if (!selected.has(i)) setFocus(i);
-      layoutList();
-      showCtxMenu(ev, e);
-    };
-    listBody.appendChild(tr);
-  });
+    tr.appendChild(td);
+  }
+  tr.onmousedown = (ev) => {
+    treeFocus = false;
+    beginDragCandidate(ev, e, i);
+  };
+  tr.ondragstart = (ev) => ev.preventDefault();
+  tr.onclick = (ev) => {
+    if (dragging) return;
+    setFocus(i, { ctrl: ev.ctrlKey, shift: ev.shiftKey });
+    layoutList();
+  };
+  tr.ondblclick = () => activate(e);
+  tr.oncontextmenu = (ev) => {
+    ev.stopPropagation();
+    if (!selected.has(i)) setFocus(i);
+    layoutList();
+    showCtxMenu(ev, e);
+  };
+  return tr;
+}
+
+/** A spacer row standing in for the rows above or below the window. */
+function spacerRow(height: number, cols: number): HTMLTableRowElement {
+  const tr = document.createElement("tr");
+  tr.className = "spacer";
+  const td = document.createElement("td");
+  td.colSpan = cols;
+  td.style.height = `${height}px`;
+  td.style.padding = "0";
+  td.style.border = "none";
+  tr.appendChild(td);
+  return tr;
+}
+
+/** Details view, virtualised like the grid: only the rows on screen exist in
+ *  the DOM. A folder of 20 000 files used to put 20 000 rows there, and every
+ *  click rebuilt the lot. */
+function layoutList(): void {
+  const total = visible.length;
+  const cols = shownColumns().length;
+  const viewH = gridWrap.clientHeight || 600;
+  const scrollTop = gridWrap.scrollTop;
+  const h = rowH();
+  const MARGIN = 8; // rows kept beyond each edge, so scrolling looks seamless
+  const first = Math.max(0, Math.floor(scrollTop / h) - MARGIN);
+  const last = Math.min(total, Math.ceil((scrollTop + viewH) / h) + MARGIN);
+
+  const frag = document.createDocumentFragment();
+  if (first > 0) frag.appendChild(spacerRow(first * h, cols));
+  for (let i = first; i < last; i++) frag.appendChild(makeListRow(visible[i], i));
+  if (last < total) frag.appendChild(spacerRow((total - last) * h, cols));
+
+  listBody.innerHTML = "";
+  listBody.appendChild(frag);
 }
 
 // ---------- Activation (double-click / Enter) ----------
@@ -2431,13 +2683,66 @@ let zoom = 1;
  *  no "real size then zoom" jump while the full image decodes. */
 let pendingDims: { w: number; h: number } | null = null;
 
+// ---------- Two-page view ----------
+const viewerImg2 = $<HTMLImageElement>("viewer-img2");
+
+/** The pictures shown together for media index `i`: [first, second], second
+ *  being -1 when the page stands alone. Only still pictures pair up; a video
+ *  always gets the screen to itself. With a cover page the first item of the
+ *  folder is alone, then (1,2), (3,4)... - the way a PDF reader shows a book. */
+function spreadPair(i: number): [number, number] {
+  const media = mediaList();
+  if (settings.spread === "single" || !media[i]) return [i, -1];
+  const still = (k: number) => media[k]?.kind === "image" || media[k]?.kind === "raw";
+  let first: number;
+  if (settings.spread === "cover") {
+    if (i === 0) return [0, -1];
+    first = i - ((i - 1) % 2);
+  } else {
+    first = i - (i % 2);
+  }
+  if (!still(first)) return [i, -1];
+  const second = first + 1;
+  return second < media.length && still(second) ? [first, second] : [first, -1];
+}
+/** True while two pages are actually on screen. */
+function inSpread(): boolean {
+  return !viewerImg2.hidden;
+}
+
+function syncSpreadSeg(): void {
+  document.querySelectorAll<HTMLButtonElement>("#spread-seg .spread-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.spread === settings.spread),
+  );
+}
+document.querySelectorAll<HTMLButtonElement>("#spread-seg .spread-btn").forEach((b) => {
+  b.onclick = () => {
+    settings.spread = b.dataset.spread as Settings["spread"];
+    saveSettings();
+    syncSpreadSeg();
+    // Re-lay the open viewer on the spot.
+    if (!viewer.classList.contains("hidden")) void showViewerImage();
+  };
+});
+
 function effectiveDims(): { w: number; h: number } {
-  if (viewerImg.dataset.ph === "1" && pendingDims) return pendingDims;
-  return { w: viewerImg.naturalWidth, h: viewerImg.naturalHeight };
+  const one =
+    viewerImg.dataset.ph === "1" && pendingDims
+      ? pendingDims
+      : { w: viewerImg.naturalWidth, h: viewerImg.naturalHeight };
+  if (!inSpread() || !one.w || !one.h) return one;
+  // Second page brought to the first one's height; its ratio is known as
+  // soon as anything is painted (the thumbnail has the same proportions).
+  const r2 =
+    viewerImg2.naturalWidth && viewerImg2.naturalHeight
+      ? viewerImg2.naturalWidth / viewerImg2.naturalHeight
+      : one.w / one.h;
+  return { w: one.w + one.h * r2, h: one.h };
 }
 
 /** Rotation of the image on screen; 90/270 swap width and height. */
 function viewerRot(): number {
+  if (inSpread()) return 0; // pages of a spread are shown as they are
   const e = mediaList()[viewerIndex];
   return e ? rotOf(e.path) : 0;
 }
@@ -2479,6 +2784,29 @@ function applyViewerScale(): void {
   const s = fitScale() * zoom;
   const w = Math.round(nw * s);
   const h = Math.round(nh * s);
+  const rotEl0 = $<HTMLDivElement>("viewer-rot");
+  rotEl0.classList.toggle("spread", inSpread());
+  if (inSpread()) {
+    // One scale for the whole spread: page 1 keeps its size, page 2 gets
+    // the same height and its own width.
+    const d1 =
+      viewerImg.dataset.ph === "1" && pendingDims
+        ? pendingDims
+        : { w: viewerImg.naturalWidth, h: viewerImg.naturalHeight };
+    const h1 = Math.round(d1.h * s);
+    const w1 = Math.round(d1.w * s);
+    viewerImg.style.width = `${w1}px`;
+    viewerImg.style.height = `${h1}px`;
+    viewerImg2.style.width = `${Math.max(0, w - w1)}px`;
+    viewerImg2.style.height = `${h1}px`;
+    rotEl0.style.width = `${w}px`;
+    rotEl0.style.height = `${h1}px`;
+    viewerScroll.classList.toggle(
+      "pannable",
+      w > viewerScroll.clientWidth || h1 > viewerScroll.clientHeight,
+    );
+    return;
+  }
   viewerImg.style.width = `${w}px`;
   viewerImg.style.height = `${h}px`;
   // The wrapper carries the ROTATED footprint so centring and scrolling
@@ -2517,15 +2845,34 @@ function setFitMode(m: Settings["fitMode"]): void {
 }
 
 /** Switch fit mode while keeping the point (cx, cy) under the cursor. */
+/** Where (cx, cy) falls inside the picture, as a 0..1 pair. Measured from
+ *  the rendered box rather than computed from the scroll position: the
+ *  scroller CENTRES its content, so a fitted image sits in the middle of a
+ *  margin that is not part of the picture. Counting that margin in was what
+ *  made the anchor drift. */
+function pointInImage(cx: number, cy: number): [number, number] {
+  const box = $("viewer-rot").getBoundingClientRect();
+  const clamp = (v: number) => Math.min(1, Math.max(0, v));
+  return [
+    box.width ? clamp((cx - box.left) / box.width) : 0.5,
+    box.height ? clamp((cy - box.top) / box.height) : 0.5,
+  ];
+}
+
+/** Scroll so that the picture's (u, v) point lands under (cx, cy). */
+function anchorPointAt(u: number, v: number, cx: number, cy: number): void {
+  // The box must already have its new size, hence the flush: scrolling
+  // against a stale extent gets clamped and the point lands short.
+  void viewerScroll.scrollWidth;
+  const box = $("viewer-rot").getBoundingClientRect();
+  viewerScroll.scrollLeft += box.left + u * box.width - cx;
+  viewerScroll.scrollTop += box.top + v * box.height - cy;
+}
+
 function setFitModeAt(m: Settings["fitMode"], cx: number, cy: number): void {
-  const oldScale = fitScale() * zoom;
-  const rect = viewerScroll.getBoundingClientRect();
-  const x = cx - rect.left + viewerScroll.scrollLeft;
-  const y = cy - rect.top + viewerScroll.scrollTop;
+  const [u, v] = pointInImage(cx, cy);
   setFitMode(m);
-  const k = (fitScale() * zoom) / oldScale;
-  viewerScroll.scrollLeft = x * k - (cx - rect.left);
-  viewerScroll.scrollTop = y * k - (cy - rect.top);
+  anchorPointAt(u, v, cx, cy);
 }
 function updateFitButtons(): void {
   const mf = modeFit();
@@ -2717,6 +3064,7 @@ function applyOverlayFS(): void {
   viewer.classList.toggle("true-fs", viewerFS);
   player.classList.toggle("true-fs", viewerFS);
   updateOverlayState();
+  updateModeButtons();
   // Fullscreen swaps the bulky native controls for the compact glass bar.
   playerVideo.controls = !viewerFS;
   if (viewerFS) pokePbar();
@@ -2811,10 +3159,19 @@ function setWindowTitle(text?: string): void {
 
 async function showViewerImage(): Promise<void> {
   const media = mediaList();
+  // Always start a spread on its first page.
+  viewerIndex = spreadPair(viewerIndex)[0];
   const e = media[viewerIndex];
   if (!e) return;
   viewerInfo.textContent = "";
-  setWindowTitle(`${e.name}  —  ${fmtSize(e.size)}  (${viewerIndex + 1}/${media.length})`);
+  const [, second] = spreadPair(viewerIndex);
+  const e2 = second >= 0 ? media[second] : null;
+  showSecondPage(e2);
+  setWindowTitle(
+    e2
+      ? `${e.name}  +  ${e2.name}  (${viewerIndex + 1}-${second + 1}/${media.length})`
+      : `${e.name}  —  ${fmtSize(e.size)}  (${viewerIndex + 1}/${media.length})`,
+  );
   if (!settings.keepZoom) zoom = 1;
   updateStrip();
   if (!$("exif-panel").classList.contains("hidden")) void fillExifPanel(e);
@@ -2866,6 +3223,34 @@ async function showViewerImage(): Promise<void> {
   }
   preloadNeighbours();
 }
+/** Fill the right-hand page of a spread, or put it away. Thumbnail first,
+ *  then the full picture - the same order as the main page. */
+let secondPagePath = "";
+function showSecondPage(e2: Entry | null): void {
+  if (!e2) {
+    secondPagePath = "";
+    viewerImg2.hidden = true;
+    viewerImg2.removeAttribute("src");
+    return;
+  }
+  secondPagePath = e2.path;
+  viewerImg2.hidden = false;
+  const ready = hdCache.get(e2.path);
+  if (ready?.complete && ready.naturalWidth > 0) {
+    viewerImg2.src = ready.src;
+    return;
+  }
+  const th = thumbs.get(e2.path);
+  if (th) viewerImg2.src = convertFileSrc(th);
+  void resolveHd(e2).then((url) => {
+    if (url && secondPagePath === e2.path) viewerImg2.src = url;
+  });
+}
+// Its real proportions only arrive with the picture: lay out again then.
+viewerImg2.addEventListener("load", () => {
+  if (!viewer.classList.contains("hidden")) applyViewerScale();
+});
+
 function preloadNeighbours(): void {
   const media = mediaList();
   const n = settings.preloadCount;
@@ -2904,16 +3289,19 @@ function notifyWrap(raw: number, len: number): void {
 function viewerNav(delta: number): void {
   const media = mediaList();
   if (!media.length) return;
-  let i = viewerIndex + delta;
+  // In a spread, a step is a whole pair: next goes past the second page,
+  // previous lands on the start of the pair before.
+  const [p1, p2] = spreadPair(viewerIndex);
+  let i = delta > 0 ? (p2 >= 0 ? p2 : p1) + delta : p1 + delta;
   if (settings.loopNav) {
     notifyWrap(i, media.length);
     i = (i + media.length) % media.length;
   } else if (i < 0 || i >= media.length) return;
-  viewerIndex = i;
-  const e = media[i];
+  viewerIndex = spreadPair(i)[0];
+  const e = media[viewerIndex];
   if (e.kind === "video") {
     viewer.classList.add("hidden");
-    openPlayer(i);
+    openPlayer(viewerIndex);
   } else {
     void showViewerImage();
   }
@@ -2943,6 +3331,7 @@ function closeViewer(force = false): void {
   $("zoom-badge").classList.add("hidden");
   viewerImg.dataset.ph = "";
   viewerImg.src = "";
+  showSecondPage(null);
   updateOverlayState();
   if (player.classList.contains("hidden")) {
     setWindowTitle();
@@ -3183,14 +3572,14 @@ playerVideo.addEventListener("click", () => {
     else playerVideo.pause();
   }, 220);
 });
-playerVideo.addEventListener("dblclick", () => {
-  window.clearTimeout(playClickTimer);
-  if (viewerFS) closePlayer(true); // fullscreen -> grid in one gesture
-  else void setViewerFullscreen(true);
-});
-// Click beside the video (the black surround) closes, as in the image viewer.
-player.addEventListener("click", (ev) => {
-  if (ev.target === player) closePlayer();
+// The one gesture that still changes the mode: a double-click in fullscreen
+// goes back to the thumbnails. Windowed mode has no gesture at all - there
+// the two buttons decide. The surround stays inert either way.
+playerVideo.addEventListener("dblclick", (ev) => {
+  if (!viewerFS) return;
+  ev.preventDefault();
+  window.clearTimeout(playClickTimer); // the first click must not toggle play
+  closePlayer(true);
 });
 
 // ----- Player extras: speed, A-B loop, lossless cut -----
@@ -3437,11 +3826,10 @@ window.addEventListener("mouseup", () => {
 });
 
 gridWrap.addEventListener("scroll", () => {
-  if (settings.view === "grid") layoutGrid();
+  repaint();
+  requestVisibleThumbs();
 });
-window.addEventListener("resize", () => {
-  if (settings.view === "grid") layoutGrid();
-});
+window.addEventListener("resize", () => repaint());
 
 $<HTMLButtonElement>("btn-up").onclick = goUp;
 $<HTMLButtonElement>("btn-back").onclick = () => navGo(-1);
@@ -3464,9 +3852,13 @@ const filterText = $<HTMLInputElement>("filter-text");
 function syncFilterClear(): void {
   $("filter-clear").classList.toggle("hidden", filterText.value === "");
 }
+// Each keystroke used to filter, sort and lay out the whole folder again:
+// an eight-letter word meant eight full passes.
+let filterTimer = 0;
 filterText.oninput = () => {
   syncFilterClear();
-  refresh();
+  window.clearTimeout(filterTimer);
+  filterTimer = window.setTimeout(refresh, 120);
 };
 // Escape empties the box as well, the way browsers do.
 filterText.addEventListener("keydown", (ev) => {
@@ -3684,10 +4076,10 @@ $<HTMLInputElement>("thumb-size").onchange = () => {
 };
 
 // Viewer / player controls
-$<HTMLButtonElement>("viewer-close").onclick = () => closeViewer();
+
 $<HTMLButtonElement>("viewer-prev").onclick = () => viewerNav(-1);
 $<HTMLButtonElement>("viewer-next").onclick = () => viewerNav(1);
-$<HTMLButtonElement>("player-close").onclick = () => closePlayer();
+
 $<HTMLButtonElement>("player-prev").onclick = () => playerNav(-1);
 $<HTMLButtonElement>("player-next").onclick = () => playerNav(1);
 // Same wheel behaviour as the image viewer: move to the next / previous
@@ -3722,6 +4114,22 @@ player.addEventListener(
   { passive: false },
 );
 
+// The two overlay buttons are the only thing that changes the display mode:
+// one swaps window and fullscreen, the other goes back to the thumbnails.
+function updateModeButtons(): void {
+  for (const id of ["viewer-mode", "player-mode"]) {
+    const b = $<HTMLButtonElement>(id);
+    b.textContent = viewerFS ? "\u{1f5d7}" : "\u26f6";
+    b.title = viewerFS ? t("goWindowed") : t("goFullscreen");
+  }
+}
+for (const id of ["viewer-mode", "player-mode"]) {
+  $<HTMLButtonElement>(id).onclick = () => void setViewerFullscreen(!viewerFS);
+}
+for (const id of ["viewer-close", "player-close"]) {
+  $<HTMLButtonElement>(id).onclick = () => closeOverlay(true); // straight to the grid
+}
+
 $<HTMLButtonElement>("viewer-del").onclick = () => void deleteCurrent();
 $<HTMLButtonElement>("player-del").onclick = () => void deleteCurrent();
 viewerImg.addEventListener("load", () => applyViewerScale());
@@ -3732,10 +4140,21 @@ window.addEventListener("resize", () => {
 // The intrinsic size is only known once the stream is opened.
 playerVideo.addEventListener("loadedmetadata", () => applyPlayerFit());
 // Wheel: navigate between images; hold Ctrl to zoom (ACDSee/XnView style).
+// While the right button is down the wheel zooms instead, with no modifier:
+// the hand is already on the picture, inspecting it.
 viewer.addEventListener("wheel", (ev) => {
   ev.preventDefault();
-  if (ev.ctrlKey) {
+  if (rightPeek || ev.ctrlKey) {
     viewerZoomAt(ev.deltaY < 0 ? 1.15 : 0.87, ev.clientX, ev.clientY);
+    if (rightPeek) {
+      // Re-base the drag on where things are NOW, or the next mouse move
+      // would snap back to the scroll position from before the zoom.
+      rightPeek.x = ev.clientX;
+      rightPeek.y = ev.clientY;
+      rightPeek.sl = viewerScroll.scrollLeft;
+      rightPeek.st = viewerScroll.scrollTop;
+      rightPeek.moved = true; // zooming settles it: this is a hold
+    }
   } else {
     viewerNav(ev.deltaY > 0 ? 1 : -1);
   }
@@ -3743,15 +4162,10 @@ viewer.addEventListener("wheel", (ev) => {
 
 /// Zoom keeping the point under the cursor stationary.
 function viewerZoomAt(factor: number, cx: number, cy: number): void {
-  const oldScale = fitScale() * zoom;
+  const [u, v] = pointInImage(cx, cy);
   zoom = Math.min(16, Math.max(0.05, zoom * factor));
-  const k = (fitScale() * zoom) / oldScale;
-  const rect = viewerScroll.getBoundingClientRect();
-  const x = cx - rect.left + viewerScroll.scrollLeft;
-  const y = cy - rect.top + viewerScroll.scrollTop;
   applyViewerScale();
-  viewerScroll.scrollLeft = x * k - (cx - rect.left);
-  viewerScroll.scrollTop = y * k - (cy - rect.top);
+  anchorPointAt(u, v, cx, cy);
   showZoomBadge();
 }
 
@@ -3759,7 +4173,18 @@ function viewerZoomAt(factor: number, cx: number, cy: number): void {
 //  - held down  -> a peek: the previous fit comes back on release;
 //  - clicked    -> it sticks, and the next right-click returns.
 let preActualMode: Settings["fitMode"] | null = null;
-let rightPeek: { mode: Settings["fitMode"]; at: number } | null = null;
+let rightPeek:
+  | {
+      mode: Settings["fitMode"];
+      at: number;
+      /** Cursor and scroll position when the button went down. */
+      x: number;
+      y: number;
+      sl: number;
+      st: number;
+      moved: boolean;
+    }
+  | null = null;
 /** Longer than this and the press counts as "held", not "clicked". */
 const PEEK_HOLD_MS = 250;
 
@@ -3777,12 +4202,34 @@ viewer.addEventListener("mousedown", (ev) => {
     return;
   }
   preActualMode = modeFit().mode;
-  rightPeek = { mode: preActualMode, at: Date.now() };
   setFitModeAt("actual", ev.clientX, ev.clientY);
+  // Baseline read AFTER the switch and its layout flush: setFitModeAt has
+  // just centred the view on the cursor, and the drag starts from there.
+  rightPeek = {
+    mode: preActualMode,
+    at: Date.now(),
+    x: ev.clientX,
+    y: ev.clientY,
+    sl: viewerScroll.scrollLeft,
+    st: viewerScroll.scrollTop,
+    moved: false,
+  };
+});
+
+// Keep dragging while the button is down: the picture follows the hand, the
+// same direction as the left-button pan.
+window.addEventListener("mousemove", (ev) => {
+  if (!rightPeek) return;
+  const dx = ev.clientX - rightPeek.x;
+  const dy = ev.clientY - rightPeek.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) rightPeek.moved = true;
+  viewerScroll.scrollLeft = rightPeek.sl - dx;
+  viewerScroll.scrollTop = rightPeek.st - dy;
 });
 window.addEventListener("mouseup", (ev) => {
   if (ev.button !== 2 || !rightPeek) return;
-  if (Date.now() - rightPeek.at >= PEEK_HOLD_MS) {
+  // Having dragged settles it: that was a hold, however brief.
+  if (rightPeek.moved || Date.now() - rightPeek.at >= PEEK_HOLD_MS) {
     // It was a hold: restore the view it interrupted.
     setFitModeAt(rightPeek.mode, ev.clientX, ev.clientY);
     preActualMode = null;
@@ -3956,19 +4403,9 @@ window.addEventListener("mouseup", (ev) => {
   const target = ev.target;
   panStart = null;
   if (moved) return;
-  // A click ON the picture does nothing: double-click drives the modes.
-  // A click on the backdrop steps out one level, like the close button.
-  if (target === viewerScroll) closeViewer();
+  void target; // neither the picture nor the backdrop switches modes
 });
 
-// Double-click mirrors the Escape shortcut: in fullscreen it goes straight
-// back to the thumbnails, in windowed mode it goes fullscreen. Same gesture,
-// same meaning as on a video.
-viewerImg.addEventListener("dblclick", (ev) => {
-  ev.preventDefault();
-  if (viewerFS) closeViewer(true);
-  else void setViewerFullscreen(true);
-});
 
 // Middle click: back to the grid from anywhere, even when the picture covers
 // the whole screen and there is no backdrop left to click.
@@ -3984,6 +4421,13 @@ for (const overlay of [viewer, player]) {
   });
 }
 viewerImg.addEventListener("dragstart", (ev) => ev.preventDefault());
+
+// Double-click in fullscreen: straight back to the thumbnails, as on a video.
+viewerImg.addEventListener("dblclick", (ev) => {
+  if (!viewerFS) return;
+  ev.preventDefault();
+  closeViewer(true);
+});
 
 // True fullscreen on a still image: the cursor bows out once the mouse rests,
 // exactly as it does over a video.
@@ -4170,7 +4614,58 @@ function updateJumpButtons(): void {
 }
 gridWrap.addEventListener("scroll", updateJumpButtons);
 window.addEventListener("resize", updateJumpButtons);
-$<HTMLButtonElement>("settings-close").onclick = () => $("settings").classList.add("hidden");
+$<HTMLButtonElement>("settings-x").onclick = () => $("settings").classList.add("hidden");
+
+// ----- Options window: remembered size, movable by its header -----
+const optPanel = $<HTMLDivElement>("settings-panel");
+function applyOptSize(): void {
+  if (settings.optW) optPanel.style.width = `${settings.optW}px`;
+  if (settings.optH) optPanel.style.height = `${settings.optH}px`;
+}
+// The native resize grip changes the box; remember the result. Ignored while
+// hidden (the box measures 0) and debounced so a drag writes once.
+let optSizeTimer = 0;
+new ResizeObserver(() => {
+  if ($("settings").classList.contains("hidden")) return;
+  const w = Math.round(optPanel.offsetWidth);
+  const h = Math.round(optPanel.offsetHeight);
+  if (!w || !h || (w === settings.optW && h === settings.optH)) return;
+  window.clearTimeout(optSizeTimer);
+  optSizeTimer = window.setTimeout(() => {
+    settings.optW = w;
+    settings.optH = h;
+    saveSettings();
+  }, 300);
+}).observe(optPanel);
+
+// Drag by the header. The panel leaves the centred flex flow the first time
+// it is moved, and stays where it was put for the rest of the session.
+$("settings-head").addEventListener("mousedown", (ev) => {
+  if (ev.button !== 0 || (ev.target as HTMLElement).closest("#settings-x")) return;
+  ev.preventDefault();
+  const head = $("settings-head");
+  const r = optPanel.getBoundingClientRect();
+  optPanel.style.position = "absolute";
+  optPanel.style.left = `${r.left}px`;
+  optPanel.style.top = `${r.top}px`;
+  const ox = ev.clientX - r.left;
+  const oy = ev.clientY - r.top;
+  head.classList.add("dragging");
+  const move = (m: MouseEvent) => {
+    // Keep a grabbable strip on screen whatever happens.
+    const left = Math.min(window.innerWidth - 80, Math.max(-optPanel.offsetWidth + 80, m.clientX - ox));
+    const top = Math.min(window.innerHeight - 40, Math.max(0, m.clientY - oy));
+    optPanel.style.left = `${left}px`;
+    optPanel.style.top = `${top}px`;
+  };
+  const up = () => {
+    head.classList.remove("dragging");
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+});
 $<HTMLSelectElement>("set-lang").onchange = (ev) => {
   settings.lang = (ev.target as HTMLSelectElement).value;
   saveSettings();
@@ -4258,6 +4753,23 @@ bindCheck("set-clear-play-exit", () => settings.clearPlayOnExit, (v) => {
   settings.clearPlayOnExit = v;
   void invoke("set_clear_play_on_exit", { on: v }).catch(() => {});
 });
+$<HTMLButtonElement>("btn-purge").onclick = () => {
+  const btn = $<HTMLButtonElement>("btn-purge");
+  btn.disabled = true;
+  void invoke("purge_orphans")
+    .then((r) => {
+      const rep = r as { files: number; bytes: number; records: number; offline: number };
+      const parts = [
+        `${rep.files} ${t("filesSuffix")} (${fmtSize(rep.bytes)})`,
+        `${rep.records} ${t("purgeRecords")}`,
+      ];
+      if (rep.offline) parts.push(`${rep.offline} ${t("purgeOffline")}`);
+      toast(`${t("purgeDone")} ${parts.join(", ")}`);
+      void refreshCacheStats();
+    })
+    .catch((err) => toast(String(err)))
+    .finally(() => (btn.disabled = false));
+};
 $<HTMLButtonElement>("btn-clear-play").onclick = () => {
   void invoke("clear_play").then((freed) => {
     toast(`${t("freed")} ${fmtSize(freed as number)}`);

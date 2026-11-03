@@ -50,15 +50,22 @@ impl ThumbCache {
                  tags   TEXT NOT NULL DEFAULT '',
                  rot    INTEGER NOT NULL DEFAULT 0,
                  taken  INTEGER NOT NULL DEFAULT 0,
-                 pos    REAL NOT NULL DEFAULT 0
+                 pos    REAL NOT NULL DEFAULT 0,
+                 dur    REAL NOT NULL DEFAULT 0
              );
-             CREATE INDEX IF NOT EXISTS meta_parent ON meta(parent);",
+             CREATE INDEX IF NOT EXISTS meta_parent ON meta(parent);
+             CREATE TABLE IF NOT EXISTS files (
+                 file   TEXT PRIMARY KEY,
+                 source TEXT NOT NULL
+             );",
         )?;
         // Older caches lack the rotation column; ignore the error if present.
         let _ = conn.execute("ALTER TABLE meta ADD COLUMN rot INTEGER NOT NULL DEFAULT 0", []);
         let _ = conn.execute("ALTER TABLE meta ADD COLUMN taken INTEGER NOT NULL DEFAULT 0", []);
         // Playback position of a video, in seconds; 0 = start from the top.
         let _ = conn.execute("ALTER TABLE meta ADD COLUMN pos REAL NOT NULL DEFAULT 0", []);
+        // Total length of a video, in seconds; 0 = never probed.
+        let _ = conn.execute("ALTER TABLE meta ADD COLUMN dur REAL NOT NULL DEFAULT 0", []);
         Ok(Self {
             conn: Mutex::new(conn),
             dir: dir.to_path_buf(),
@@ -186,6 +193,25 @@ impl ThumbCache {
             .unwrap_or(0.0)
     }
 
+    /// Length of a video in seconds, 0 when ffprobe has never been run on it.
+    pub fn dur(&self, path: &str) -> f64 {
+        let Ok(conn) = self.conn.lock() else { return 0.0 };
+        conn.prepare_cached("SELECT dur FROM meta WHERE path=?1")
+            .and_then(|mut st| st.query_row(params![path], |r| r.get(0)))
+            .unwrap_or(0.0)
+    }
+
+    /// Memoise a probed duration: ffprobe costs tens of milliseconds a file.
+    pub fn set_dur(&self, path: &str, parent: &str, dur: f64) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute(
+                "INSERT INTO meta (path, parent, dur) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(path) DO UPDATE SET dur = ?3",
+                params![path, parent, dur],
+            );
+        }
+    }
+
     /// Remember where playback stopped so the video resumes there.
     pub fn set_pos(&self, path: &str, parent: &str, pos: f64) {
         if let Ok(conn) = self.conn.lock() {
@@ -211,6 +237,103 @@ impl ThumbCache {
             }
         }
         freed
+    }
+
+    /// Remember which original a cache file was made from. Thumbnails have
+    /// their own table; the files ffmpeg produces (video thumbnails, previews,
+    /// converted videos) only had a hash for a name - this is their link back.
+    pub fn record_file(&self, file: &str, source: &str) {
+        if let Ok(conn) = self.conn.lock() {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO files (file, source) VALUES (?1, ?2)",
+                params![file, source],
+            );
+        }
+    }
+
+    /// Drop what belongs to originals that no longer exist: thumbnails,
+    /// ffmpeg products, ratings and playback positions.
+    ///
+    /// A missing file is only treated as gone when its DRIVE is present. A
+    /// disconnected external disk makes every file on it look missing, and
+    /// purging then would wipe the ratings of a whole library that merely
+    /// sits in a drawer.
+    pub fn purge_orphans(&self) -> PurgeReport {
+        let mut rep = PurgeReport::default();
+        let mut roots: std::collections::HashMap<PathBuf, bool> = Default::default();
+        let mut gone = |path: &str, rep: &mut PurgeReport| -> bool {
+            let p = Path::new(path);
+            if p.exists() {
+                return false;
+            }
+            let root = volume_root(p);
+            let present = *roots.entry(root.clone()).or_insert_with(|| root.exists());
+            if !present {
+                rep.offline += 1;
+            }
+            present
+        };
+
+        let Ok(conn) = self.conn.lock() else { return rep };
+
+        // 1. Thumbnails, by their original.
+        let thumb_rows: Vec<(String, String)> = conn
+            .prepare("SELECT path, thumb FROM thumbs")
+            .and_then(|mut st| {
+                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map(|rows| rows.flatten().collect())
+            })
+            .unwrap_or_default();
+        let mut dead_sources = std::collections::HashSet::new();
+        let mut checked = std::collections::HashMap::new();
+        for (src, thumb) in &thumb_rows {
+            let is_gone = *checked.entry(src.clone()).or_insert_with(|| gone(src, &mut rep));
+            if is_gone {
+                rep.bytes += std::fs::metadata(thumb).map(|m| m.len()).unwrap_or(0);
+                if std::fs::remove_file(thumb).is_ok() {
+                    rep.files += 1;
+                }
+                dead_sources.insert(src.clone());
+            }
+        }
+        for src in &dead_sources {
+            let _ = conn.execute("DELETE FROM thumbs WHERE path=?1", params![src]);
+        }
+
+        // 2. ffmpeg products whose original is known.
+        let file_rows: Vec<(String, String)> = conn
+            .prepare("SELECT file, source FROM files")
+            .and_then(|mut st| {
+                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map(|rows| rows.flatten().collect())
+            })
+            .unwrap_or_default();
+        for (file, src) in &file_rows {
+            let is_gone = *checked.entry(src.clone()).or_insert_with(|| gone(src, &mut rep));
+            if is_gone || !Path::new(file).exists() {
+                if is_gone {
+                    rep.bytes += std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+                    if std::fs::remove_file(file).is_ok() {
+                        rep.files += 1;
+                    }
+                }
+                let _ = conn.execute("DELETE FROM files WHERE file=?1", params![file]);
+            }
+        }
+
+        // 3. Ratings, labels, keywords and positions of deleted originals.
+        let meta_paths: Vec<String> = conn
+            .prepare("SELECT path FROM meta")
+            .and_then(|mut st| st.query_map([], |r| r.get(0)).map(|rows| rows.flatten().collect()))
+            .unwrap_or_default();
+        for path in &meta_paths {
+            let is_gone = *checked.entry(path.clone()).or_insert_with(|| gone(path, &mut rep));
+            if is_gone {
+                let _ = conn.execute("DELETE FROM meta WHERE path=?1", params![path]);
+                rep.records += 1;
+            }
+        }
+        rep
     }
 
     /// Wipe the whole cache (records + files). Returns freed byte count.
@@ -301,6 +424,31 @@ impl ThumbCache {
     }
 }
 
+/// What a purge removed.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct PurgeReport {
+    /// Cache files deleted and the space they took.
+    pub files: u64,
+    pub bytes: u64,
+    /// Metadata rows (ratings, positions...) of originals that are gone.
+    pub records: u64,
+    /// Entries left alone because their drive is not connected.
+    pub offline: u64,
+}
+
+/// The drive a path lives on: "E:\\" for a local path, "\\\\server\\share\\"
+/// for a network one. Its absence means "disconnected", not "deleted".
+fn volume_root(p: &Path) -> PathBuf {
+    let mut root = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => root.push(c),
+            _ => break,
+        }
+    }
+    root
+}
+
 /// User metadata attached to a file (rating, colour label, pick/reject, tags).
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct MetaRow {
@@ -313,6 +461,8 @@ pub struct MetaRow {
     pub rot: i64,
     /// Playback position in seconds (videos).
     pub pos: f64,
+    /// Total length in seconds (videos), 0 when unknown.
+    pub dur: f64,
 }
 
 impl ThumbCache {
@@ -320,7 +470,7 @@ impl ThumbCache {
     pub fn dir_meta(&self, parent: &str) -> Vec<MetaRow> {
         let Ok(conn) = self.conn.lock() else { return Vec::new() };
         let Ok(mut stmt) = conn.prepare_cached(
-            "SELECT path, rating, color, flag, tags, rot, pos FROM meta WHERE parent = ?1",
+            "SELECT path, rating, color, flag, tags, rot, pos, dur FROM meta WHERE parent = ?1",
         ) else {
             return Vec::new();
         };
@@ -333,6 +483,7 @@ impl ThumbCache {
                 tags: r.get(4)?,
                 rot: r.get(5)?,
                 pos: r.get(6)?,
+                dur: r.get(7)?,
             })
         })
         .map(|rows| rows.flatten().collect())
@@ -396,6 +547,39 @@ mod tests {
         assert_eq!(c.dir_meta("E:/")[0].pos, 123.5);
         c.set_pos("E:/clip.mkv", "E:/", 0.0);
         assert_eq!(c.pos("E:/clip.mkv"), 0.0);
+    }
+
+    /// Purging removes what belongs to deleted originals - and never touches
+    /// entries whose drive is merely disconnected.
+    #[test]
+    fn purge_spares_disconnected_drives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+
+        // An original that exists, and one that was deleted.
+        let alive = tmp.path().join("alive.jpg");
+        std::fs::write(&alive, b"x").unwrap();
+        let deleted = tmp.path().join("deleted.jpg");
+        let parent = tmp.path().to_string_lossy().to_string();
+        for (src, name) in [(&alive, "a.jpg"), (&deleted, "d.jpg")] {
+            let thumb = c.dir.join("thumbs").join(name);
+            std::fs::write(&thumb, b"thumbnail").unwrap();
+            c.put(&src.to_string_lossy(), 1, 1, 256, &thumb.to_string_lossy(), 10, 10);
+            c.set_meta(&src.to_string_lossy(), &parent, Some(5), None, None, None, None);
+        }
+        // A file on a drive that is not connected right now.
+        let offline = "Q:\\NotPluggedIn\\holiday.jpg";
+        c.set_meta(offline, "Q:\\NotPluggedIn", Some(4), None, None, None, None);
+
+        let rep = c.purge_orphans();
+
+        assert_eq!(rep.files, 1, "only the deleted original's thumbnail goes");
+        assert_eq!(rep.records, 1, "only the deleted original's rating goes");
+        assert!(rep.offline >= 1, "the disconnected drive is reported, not purged");
+        assert!(c.dir.join("thumbs").join("a.jpg").exists());
+        assert!(!c.dir.join("thumbs").join("d.jpg").exists());
+        assert_eq!(c.dir_meta("Q:\\NotPluggedIn")[0].rating, 4, "offline rating kept");
+        assert_eq!(c.dir_meta(&parent).len(), 1, "the live file keeps its rating");
     }
 
     #[test]

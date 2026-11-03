@@ -203,5 +203,22 @@
   "clearPlayExit": "Vaciar los vídeos convertidos al cerrar",
   "tipClearPlayExit": "La carpeta play contiene copias completas de sus vídeos (convertidos para la reproducción) y las vistas previas RAW a tamaño completo. Vaciarla libera mucho espacio; la primera reproducción de un vídeo no compatible volverá a ser lenta.",
   "clearPlayNow": "Vaciar los vídeos convertidos ahora",
-  "freed": "Liberado:"
+  "freed": "Liberado:",
+  "favHide": "Ocultar en favoritos",
+  "favUnhide": "Dejar de ocultar",
+  "favShowHidden": "Mostrar favoritos ocultos",
+  "favHideAgain": "Ocultar de nuevo",
+  "goFullscreen": "Pantalla completa",
+  "goWindowed": "Volver a ventana",
+  "goGrid": "Volver a las miniaturas",
+  "purgeOrphans": "Quitar archivos desaparecidos",
+  "tipPurgeOrphans": "Elimina de la caché miniaturas, vídeos convertidos, valoraciones y posiciones de reproducción de archivos que ya no existen. Los archivos de un disco desconectado se conservan: están ausentes, no eliminados.",
+  "purgeDone": "Caché limpiada:",
+  "purgeRecords": "registros",
+  "purgeOffline": "omitidos (disco desconectado)",
+  "dragToMove": "Arrastrar para mover",
+  "spreadTip": "Disposición del visor",
+  "spreadSingle": "Una imagen a la vez",
+  "spreadDouble": "Dos imágenes lado a lado",
+  "spreadCover": "Dos imágenes lado a lado, la primera sola (portada)"
 }

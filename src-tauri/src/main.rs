@@ -7,6 +7,7 @@
 mod winclip;
 
 use lumen_core::cache::ThumbCache;
+use lumen_core::fileops::{conflict_side, same_entry, tree_size, unique_dest, Conflict, PasteOutcome};
 use lumen_core::video::{Ffmpeg, PlayableOut};
 use lumen_core::{scan, thumbs, Entry, EntryKind};
 use serde::{Deserialize, Serialize};
@@ -125,6 +126,7 @@ fn request_thumbs(
             let app = app.clone();
             let gen_ref = gen_ref.clone();
             let natives_done = natives_done.clone();
+            let cache_w = cache.clone();
             workers.push(std::thread::spawn(move || loop {
                 if gen_ref.load(Ordering::SeqCst) != generation {
                     break; // newer folder opened: stop wasting ffmpeg runs
@@ -141,6 +143,9 @@ fn request_thumbs(
                     EntryKind::Video => ffmpeg.thumb(Path::new(&r.path), tsize),
                     _ => ffmpeg.image_thumb(Path::new(&r.path), tsize),
                 };
+                if let Some(t) = &thumb {
+                    cache_w.record_file(t, &r.path); // so a purge can find its way back
+                }
                 let _ = app.emit("thumb", ThumbEvent {
                     src: r.path,
                     thumb: thumb.clone().unwrap_or_default(),
@@ -270,16 +275,20 @@ fn pregen_thumbs(
             let queue = queue.clone();
             let ffmpeg = ffmpeg.clone();
             let gen_ref = gen_ref.clone();
+            let cache_p = cache.clone();
             let tick = tick.clone();
             workers.push(std::thread::spawn(move || loop {
                 if gen_ref.load(Ordering::SeqCst) != generation {
                     break;
                 }
                 let Some(r) = queue.lock().unwrap().pop_front() else { break };
-                match r.kind {
+                let made = match r.kind {
                     EntryKind::Video => ffmpeg.thumb(Path::new(&r.path), tsize),
                     _ => ffmpeg.image_thumb(Path::new(&r.path), tsize),
                 };
+                if let Some(t) = &made {
+                    cache_p.record_file(t, &r.path);
+                }
                 tick();
             }));
         }
@@ -373,8 +382,11 @@ async fn full_image(state: State<'_, AppState>, path: String, kind: EntryKind, e
 #[tauri::command]
 async fn video_preview(state: State<'_, AppState>, path: String) -> Result<String, String> {
     let ffmpeg = state.ffmpeg.clone();
+    let cache = state.cache.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        ffmpeg.preview(Path::new(&path)).ok_or_else(|| "preview failed".to_string())
+        let out = ffmpeg.preview(Path::new(&path)).ok_or_else(|| "preview failed".to_string())?;
+        cache.record_file(&out, &path);
+        Ok(out)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -383,8 +395,14 @@ async fn video_preview(state: State<'_, AppState>, path: String) -> Result<Strin
 #[tauri::command]
 async fn prepare_video(state: State<'_, AppState>, path: String) -> Result<PlayableOut, String> {
     let ffmpeg = state.ffmpeg.clone();
+    let cache = state.cache.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        ffmpeg.playable(Path::new(&path)).ok_or_else(|| "unplayable".to_string())
+        let out = ffmpeg.playable(Path::new(&path)).ok_or_else(|| "unplayable".to_string())?;
+        // A direct play is the original itself; only real conversions are ours.
+        if out.path != path {
+            cache.record_file(&out.path, &path);
+        }
+        Ok(out)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -420,297 +438,6 @@ fn delete_file(path: String) -> Result<(), String> {
     trash::delete(&path).map_err(|e| e.to_string())
 }
 
-/// Next free "name", "name (2)", "name (3)"… inside `dir`.
-/// `whole` keeps the name in one piece: a folder called "South.Park.S27" must
-/// not become "South.Park (2).S27".
-fn unique_dest(dir: &Path, name: &str, whole: bool) -> PathBuf {
-    let cand = dir.join(name);
-    if !cand.exists() {
-        return cand;
-    }
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some((s, e)) if !s.is_empty() && !whole => (s.to_string(), format!(".{e}")),
-        _ => (name.to_string(), String::new()),
-    };
-    (2..)
-        .map(|i| dir.join(format!("{stem} ({i}){ext}")))
-        .find(|p| !p.exists())
-        .unwrap()
-}
-
-/// Total byte size of a file or of a whole folder.
-fn tree_size(p: &Path) -> u64 {
-    if p.is_dir() {
-        std::fs::read_dir(p)
-            .map(|rd| rd.flatten().map(|e| tree_size(&e.path())).sum())
-            .unwrap_or(0)
-    } else {
-        std::fs::metadata(p).map(|m| m.len()).unwrap_or(0)
-    }
-}
-
-/// Copy one file, reporting progress and honouring cancellation.
-fn copy_file_progress(
-    src: &Path,
-    dst: &Path,
-    ctx: &mut PasteCtx,
-) -> std::io::Result<()> {
-    use std::io::{Read, Write};
-    let mut fin = std::fs::File::open(src)?;
-    let mut fout = std::fs::File::create(dst)?;
-    let mut buf = vec![0u8; 1 << 20]; // 1 MiB
-    loop {
-        if ctx.cancelled() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
-        }
-        let n = fin.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        fout.write_all(&buf[..n])?;
-        ctx.advance(n as u64, src);
-    }
-    fout.flush()?;
-    // Keep the original timestamps on the copy, like Explorer does.
-    if let Ok(meta) = std::fs::metadata(src) {
-        let times = std::fs::FileTimes::new()
-            .set_modified(meta.modified().unwrap_or_else(|_| std::time::SystemTime::now()));
-        let _ = fout.set_times(times);
-    }
-    Ok(())
-}
-
-fn copy_recursive(src: &Path, dst: &Path, ctx: &mut PasteCtx) -> std::io::Result<()> {
-    if src.is_dir() {
-        std::fs::create_dir_all(dst)?;
-        for e in std::fs::read_dir(src)? {
-            let e = e?;
-            copy_recursive(&e.path(), &dst.join(e.file_name()), ctx)?;
-        }
-        Ok(())
-    } else {
-        copy_file_progress(src, dst, ctx)
-    }
-}
-
-/// True when both paths designate the SAME entry on disk. Windows is
-/// case-insensitive, so "Beach" and "beach" are one and the same folder:
-/// comparing strings would have us delete the very thing we are moving.
-fn same_entry(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => false,
-    }
-}
-
-/// True when `inner` is `outer` itself or lives somewhere inside it.
-fn is_within(inner: &Path, outer: &Path) -> bool {
-    match (inner.canonicalize(), outer.canonicalize()) {
-        (Ok(i), Ok(o)) => i.starts_with(&o),
-        _ => false,
-    }
-}
-
-/// Overwriting sends the old entry to the recycle bin - never a hard delete,
-/// so a wrong answer in the conflict dialog stays recoverable.
-fn trash_path(p: &Path) -> std::io::Result<()> {
-    trash::delete(p).map_err(|e| std::io::Error::other(e.to_string()))
-}
-
-fn remove_tree(p: &Path) -> std::io::Result<()> {
-    if p.is_dir() {
-        std::fs::remove_dir_all(p)
-    } else {
-        std::fs::remove_file(p)
-    }
-}
-
-/// Move (or copy) one entry to a target that does not exist yet.
-/// Why a move could not be completed. The distinction is what keeps data
-/// safe: only a FAILED COPY leaves rubbish at the destination worth cleaning
-/// up. When the copy went through and merely the source could not be removed,
-/// the destination holds the only complete copy and must never be touched.
-enum PlaceErr {
-    /// Nothing usable was written at the destination.
-    Copy(std::io::Error),
-    /// The destination is complete; the source is still there, in whole or in
-    /// part (a file locked by a thumbnail job, an antivirus, another app...).
-    SourceKept(std::io::Error),
-}
-
-impl PlaceErr {
-    fn io(&self) -> &std::io::Error {
-        match self {
-            PlaceErr::Copy(e) | PlaceErr::SourceKept(e) => e,
-        }
-    }
-}
-
-/// A directory whose files are still open cannot be renamed on Windows, and
-/// the lock is usually a passing thing (our own ffmpeg worker finishing a
-/// thumbnail). Give it a few chances before falling back to a full copy.
-fn rename_retry(src: &Path, dst: &Path) -> bool {
-    for attempt in 0..5u64 {
-        if std::fs::rename(src, dst).is_ok() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(60 * (attempt + 1)));
-    }
-    false
-}
-
-fn remove_tree_retry(p: &Path) -> std::io::Result<()> {
-    let mut last = remove_tree(p);
-    for attempt in 0..4u64 {
-        if last.is_ok() || !p.exists() {
-            return Ok(());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(80 * (attempt + 1)));
-        last = remove_tree(p);
-    }
-    last
-}
-
-fn place(src: &Path, dst: &Path, cut: bool, ctx: &mut PasteCtx) -> Result<(), PlaceErr> {
-    if cut && rename_retry(src, dst) {
-        ctx.done += tree_size(dst);
-        return Ok(());
-    }
-    let expected = tree_size(src);
-    copy_recursive(src, dst, ctx).map_err(PlaceErr::Copy)?;
-    if cut {
-        // Deleting the source is the point of no return: only take it once
-        // every byte is verifiably at the destination.
-        let copied = tree_size(dst);
-        if copied < expected {
-            return Err(PlaceErr::Copy(std::io::Error::other(format!(
-                "incomplete copy: {copied} of {expected} bytes"
-            ))));
-        }
-        remove_tree_retry(src).map_err(PlaceErr::SourceKept)?;
-    }
-    Ok(())
-}
-
-/// `place` inside a merge: a source that could not be deleted is recorded and
-/// stepped over, never a reason to undo a good copy.
-fn place_in_merge(
-    src: &Path,
-    dst: &Path,
-    cut: bool,
-    ctx: &mut PasteCtx,
-    out: &mut PasteOutcome,
-) -> std::io::Result<()> {
-    match place(src, dst, cut, ctx) {
-        Ok(()) => Ok(()),
-        Err(PlaceErr::SourceKept(e)) => {
-            out.kept += 1;
-            out.notes.push(format!(
-                "{}: {e}",
-                src.file_name().unwrap_or_default().to_string_lossy()
-            ));
-            Ok(())
-        }
-        Err(PlaceErr::Copy(e)) => {
-            let _ = remove_tree(dst);
-            Err(e)
-        }
-    }
-}
-
-/// Merge `src` into the existing folder `dst`, the way Explorer does: the
-/// destination is never wiped, only the colliding leaves are arbitrated by
-/// `policy`. Anything skipped simply stays where it is.
-fn merge_into(
-    src: &Path,
-    dst: &Path,
-    cut: bool,
-    policy: &str,
-    ctx: &mut PasteCtx,
-    out: &mut PasteOutcome,
-) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for e in std::fs::read_dir(src)? {
-        if ctx.cancelled() {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled"));
-        }
-        let e = e?;
-        let from = e.path();
-        let name = e.file_name();
-        let to = dst.join(&name);
-        if to.exists() {
-            if same_entry(&from, &to) {
-                continue; // same file seen from both sides
-            }
-            if from.is_dir() && to.is_dir() {
-                merge_into(&from, &to, cut, policy, ctx, out)?;
-                continue;
-            }
-            match policy {
-                "skip" => {
-                    out.skipped += 1;
-                    ctx.done += tree_size(&from);
-                    continue;
-                }
-                "replace" => {
-                    if trash_path(&to).is_err() {
-                        out.skipped += 1;
-                        continue;
-                    }
-                    out.replaced += 1;
-                }
-                _ => {
-                    let uniq = unique_dest(dst, &name.to_string_lossy(), from.is_dir());
-                    place_in_merge(&from, &uniq, cut, ctx, out)?;
-                    continue;
-                }
-            }
-        }
-        place_in_merge(&from, &to, cut, ctx, out)?;
-    }
-    if cut {
-        // Only succeeds once everything really moved: whatever was skipped
-        // keeps the source folder alive, which is exactly what we want.
-        let _ = std::fs::remove_dir(src);
-    }
-    Ok(())
-}
-
-/// Shared state of a running copy/move: progress emission + cancellation.
-struct PasteCtx {
-    app: tauri::AppHandle,
-    generation: u64,
-    gen_ref: Arc<AtomicU64>,
-    total: u64,
-    done: u64,
-    last_emit: std::time::Instant,
-}
-
-impl PasteCtx {
-    fn cancelled(&self) -> bool {
-        self.gen_ref.load(Ordering::SeqCst) != self.generation
-    }
-    fn advance(&mut self, bytes: u64, current: &Path) {
-        self.done += bytes;
-        // Throttle: the UI only needs a few updates per second.
-        if self.last_emit.elapsed() >= std::time::Duration::from_millis(120) {
-            self.last_emit = std::time::Instant::now();
-            self.emit(current);
-        }
-    }
-    fn emit(&self, current: &Path) {
-        let _ = self.app.emit(
-            "paste-progress",
-            serde_json::json!({
-                "generation": self.generation,
-                "done": self.done,
-                "total": self.total,
-                "current": current.file_name().map(|n| n.to_string_lossy().to_string()),
-            }),
-        );
-    }
-}
-
 /// Names inside `dest` that already exist among the pasted items.
 #[tauri::command]
 async fn check_conflicts(paths: Vec<String>, dest: String) -> Result<Vec<Conflict>, String> {
@@ -740,73 +467,6 @@ async fn check_conflicts(paths: Vec<String>, dest: String) -> Result<Vec<Conflic
     .map_err(|e| e.to_string())?
 }
 
-/// One side of a clash, with everything the dialog needs to compare them.
-#[derive(Serialize)]
-struct ConflictSide {
-    path: String,
-    size: u64,
-    mtime: i64,
-    /// Pixel dimensions, 0 when unknown (folder, video, unreadable header).
-    w: u32,
-    h: u32,
-}
-
-fn conflict_side(p: &Path) -> ConflictSide {
-    let md = std::fs::metadata(p).ok();
-    let is_dir = md.as_ref().is_some_and(|m| m.is_dir());
-    let (w, h) = if is_dir {
-        (0, 0)
-    } else {
-        lumen_core::image_dims(p).unwrap_or((0, 0))
-    };
-    ConflictSide {
-        path: p.to_string_lossy().to_string(),
-        size: if is_dir {
-            tree_size(p)
-        } else {
-            md.as_ref().map(|m| m.len()).unwrap_or(0)
-        },
-        mtime: md
-            .as_ref()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0),
-        w,
-        h,
-    }
-}
-
-/// One name already taken in the destination. `dir` marks a folder-on-folder
-/// clash, which is merged rather than replaced.
-#[derive(Serialize)]
-struct Conflict {
-    name: String,
-    dir: bool,
-    /// The item being pasted, and the one already in the destination.
-    src: ConflictSide,
-    dst: ConflictSide,
-}
-
-/// Result of a paste, detailed enough to be undone.
-#[derive(Debug, Default, Serialize)]
-struct PasteOutcome {
-    /// (source, destination) of every item actually transferred.
-    pairs: Vec<(String, String)>,
-    /// Items overwritten: they cannot be restored by an undo.
-    replaced: u32,
-    /// Folders merged into an existing one: moving them back would drag the
-    /// destination's own files along, so an undo is not offered.
-    merged: u32,
-    /// Copied to the destination but the source could not be removed: both
-    /// copies are still on disk, on purpose.
-    kept: u32,
-    /// Human-readable reasons for `kept`, shown to the user.
-    notes: Vec<String>,
-    skipped: u32,
-    cancelled: bool,
-}
-
 /// Paste files/folders into `dest`. `cut` moves, otherwise copies.
 /// `policy` decides what happens on a name clash: "rename" (default),
 /// "replace" or "skip".
@@ -821,118 +481,45 @@ async fn paste_files(
 ) -> Result<PasteOutcome, String> {
     let generation = state.paste_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let gen_ref = state.paste_gen.clone();
+    let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let dest_dir = PathBuf::from(&dest);
-        let policy = policy.unwrap_or_else(|| "rename".into());
-        let total: u64 = paths.iter().map(|p| tree_size(Path::new(p))).sum();
-        let mut ctx = PasteCtx {
-            app,
-            generation,
-            gen_ref,
-            total,
-            done: 0,
-            last_emit: std::time::Instant::now(),
-        };
-        let mut out = PasteOutcome::default();
-
-        for p in &paths {
-            if ctx.cancelled() {
-                out.cancelled = true;
-                break;
-            }
-            let src = PathBuf::from(p);
-            let Some(name) = src.file_name().map(|n| n.to_string_lossy().to_string()) else {
-                continue;
-            };
-            // A folder can never receive itself or one of its own ancestors.
-            if is_within(&dest_dir, &src) {
-                out.skipped += 1;
-                ctx.done += tree_size(&src);
-                continue;
-            }
-            if cut && src.parent().is_some_and(|q| same_entry(q, &dest_dir)) {
-                continue; // moving inside its own folder: nothing to do
-            }
-
-            let direct = dest_dir.join(&name);
-            let target = if direct.exists() {
-                // "Beach" landing on "beach" may be the very same folder:
-                // touching it would destroy the source AND the destination.
-                if same_entry(&src, &direct) {
-                    out.skipped += 1;
-                    ctx.done += tree_size(&src);
-                    continue;
+        // The engine lives in lumen_core, where it is tested headless; this
+        // layer only lends it a progress channel, a cancel flag and a bin.
+        let last_emit = std::sync::Mutex::new(std::time::Instant::now());
+        let outcome = lumen_core::fileops::paste(
+            &paths,
+            Path::new(&dest),
+            cut,
+            &policy.unwrap_or_else(|| "rename".into()),
+            &|done, total, current| {
+                // The engine reports every file; the window needs a few
+                // updates a second, so the throttle sits here.
+                let now = std::time::Instant::now();
+                let mut last = last_emit.lock().unwrap();
+                if now.duration_since(*last) < std::time::Duration::from_millis(120) {
+                    return;
                 }
-                if policy == "skip" {
-                    out.skipped += 1;
-                    ctx.done += tree_size(&src);
-                    continue;
-                }
-                // Two folders of the same name are merged, never swapped.
-                if src.is_dir() && direct.is_dir() && policy != "rename" {
-                    match merge_into(&src, &direct, cut, &policy, &mut ctx, &mut out) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                            out.cancelled = true;
-                            break;
-                        }
-                        Err(e) => return Err(e.to_string()),
-                    }
-                    out.merged += 1;
-                    out.pairs.push((p.clone(), direct.to_string_lossy().to_string()));
-                    ctx.emit(&src);
-                    continue;
-                }
-                if policy == "replace" {
-                    // To the recycle bin, so the choice remains reversible.
-                    if trash_path(&direct).is_err() {
-                        out.skipped += 1;
-                        continue;
-                    }
-                    out.replaced += 1;
-                    direct
-                } else {
-                    unique_dest(&dest_dir, &name, src.is_dir())
-                }
-            } else {
-                direct
-            };
-
-            // Past this point the target never pre-existed, so cleaning it up
-            // after a FAILED COPY can only remove what we ourselves wrote.
-            match place(&src, &target, cut, &mut ctx) {
-                Ok(()) => {}
-                Err(PlaceErr::Copy(e)) => {
-                    let _ = remove_tree(&target); // don't leave half a copy
-                    if e.kind() == std::io::ErrorKind::Interrupted {
-                        out.cancelled = true;
-                        break;
-                    }
-                    return Err(e.to_string());
-                }
-                Err(err @ PlaceErr::SourceKept(_)) => {
-                    // The destination is complete. Keep BOTH copies and say
-                    // so: erasing either one here is how data gets lost.
-                    out.kept += 1;
-                    out.notes.push(format!(
-                        "{}: {}",
-                        src.file_name().unwrap_or_default().to_string_lossy(),
-                        err.io()
-                    ));
-                    out.pairs.push((p.clone(), target.to_string_lossy().to_string()));
-                    ctx.emit(&src);
-                    continue;
-                }
-            }
-            out.pairs.push((p.clone(), target.to_string_lossy().to_string()));
-            ctx.emit(&src);
-        }
-
-        let _ = ctx.app.emit(
-            "paste-done",
-            serde_json::json!({ "generation": generation, "cancelled": out.cancelled }),
+                *last = now;
+                let _ = app.emit(
+                    "paste-progress",
+                    serde_json::json!({
+                        "generation": generation,
+                        "done": done,
+                        "total": total,
+                        "current": current.file_name().map(|n| n.to_string_lossy().to_string()),
+                    }),
+                );
+            },
+            &|| gen_ref.load(Ordering::SeqCst) != generation,
+            // Overwriting always goes through the recycle bin.
+            &|p| trash::delete(p).map_err(|e| std::io::Error::other(e.to_string())),
         );
-        Ok(out)
+        let cancelled = outcome.as_ref().map(|o| o.cancelled).unwrap_or(false);
+        let _ = app2.emit(
+            "paste-done",
+            serde_json::json!({ "generation": generation, "cancelled": cancelled }),
+        );
+        outcome
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1274,6 +861,17 @@ async fn rotate_exif(
     .map_err(|e| e.to_string())?
 }
 
+/// Remove from the cache what belongs to originals that no longer exist.
+#[tauri::command]
+async fn purge_orphans(
+    state: State<'_, AppState>,
+) -> Result<lumen_core::cache::PurgeReport, String> {
+    let cache = state.cache.clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(cache.purge_orphans()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Delete everything in the `play` folder: the converted videos and the
 /// full-size previews, which are copies of the user's own media.
 #[tauri::command]
@@ -1291,6 +889,35 @@ fn set_clear_play_on_exit(state: State<'_, AppState>, on: bool) {
 #[tauri::command]
 fn cancel_rotate(state: State<'_, AppState>) {
     state.rot_gen.fetch_add(1_000_000, Ordering::SeqCst);
+}
+
+/// Lengths of a batch of videos, probed in parallel and memoised. The grid
+/// shows them on the thumbnails, so this runs on the folder being looked at.
+#[tauri::command]
+async fn video_durations(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    parent: String,
+) -> Result<Vec<(String, f64)>, String> {
+    let cache = state.cache.clone();
+    let ffmpeg = state.ffmpeg.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use rayon::prelude::*;
+        Ok(paths
+            .par_iter()
+            .map(|p| {
+                let known = cache.dur(p);
+                if known != 0.0 {
+                    return (p.clone(), known);
+                }
+                let d = ffmpeg.duration(Path::new(p)).unwrap_or(0.0);
+                cache.set_dur(p, &parent, d);
+                (p.clone(), d)
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Remember where a video was left, so it resumes there next time.
@@ -1808,6 +1435,10 @@ fn main() {
                 .app_cache_dir()
                 .unwrap_or_else(|_| PathBuf::from("./lumen-cache"));
             let cache = Arc::new(ThumbCache::open(&cache_dir).expect("cache"));
+            // Stuck or crashing decodes get named here, so a recurrence of
+            // "no more thumbnails" can be traced to the file behind it.
+            lumen_core::watchdog::set_log_file(cache_dir.join("speeddisplay.log"));
+            lumen_core::watchdog::log("started");
             let ffmpeg = Arc::new(Ffmpeg::new(&cache_dir));
             app.manage(AppState {
                 cache,
@@ -1853,6 +1484,7 @@ fn main() {
             dir_meta,
             set_meta,
             set_video_pos,
+            video_durations,
             read_exif,
             image_dims,
             image_sizes,
@@ -1860,6 +1492,7 @@ fn main() {
             rotate_exif,
             cancel_rotate,
             clear_play,
+            purge_orphans,
             set_clear_play_on_exit,
             capture_dates,
             watch_dir,

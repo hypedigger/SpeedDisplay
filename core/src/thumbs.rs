@@ -11,7 +11,6 @@
 
 use crate::cache::ThumbCache;
 use crate::{fnv1a64, raw, EntryKind};
-use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView};
 use rayon::prelude::*;
 use std::path::Path;
@@ -56,7 +55,10 @@ pub fn ensure_thumb(
     let img = decode(src, kind)?;
     let (w0, h0) = img.dimensions();
     let img = if w0 > tsize || h0 > tsize {
-        img.resize(tsize, tsize, FilterType::Triangle)
+        // `thumbnail` averages areas with integer arithmetic: several times
+        // faster than a Triangle resample on a 30-100 Mpx picture, and just
+        // as clean at thumbnail size, where the extra sharpness is invisible.
+        img.thumbnail(tsize, tsize)
     } else {
         img
     };
@@ -92,9 +94,26 @@ fn decode(src: &Path, kind: EntryKind) -> Option<DynamicImage> {
             let o = exif_orientation_from_bytes(&jpeg);
             (image::load_from_memory(&jpeg).ok()?, o)
         }
-        _ => (image::open(src).ok()?, exif_orientation(src)),
+        _ => {
+            let img = image::open(src).ok()?;
+            // Only JPEG keeps its orientation in a header we can reach
+            // cheaply. For PNG and TIFF the EXIF reader walks or loads the
+            // WHOLE file - a second full read of every big picture, for a
+            // tag those formats almost never carry.
+            let o = if is_jpeg(src) { exif_orientation(src) } else { 1 };
+            (img, o)
+        }
     };
     Some(apply_orientation(img, orientation))
+}
+
+fn is_jpeg(src: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 2];
+    std::fs::File::open(src)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .map(|_| head == [0xFF, 0xD8])
+        .unwrap_or(false)
 }
 
 fn exif_orientation(src: &Path) -> u32 {
@@ -153,19 +172,43 @@ pub fn batch<F, C>(
     F: Fn(ThumbOut) + Sync + Send,
     C: Fn() -> bool + Sync + Send,
 {
-    items.par_iter().for_each(|(path, kind)| {
+    // Order matters as much as speed here. `par_iter` over the whole slice
+    // splits it across the pool, so a thread starts in the middle of the
+    // batch and thumbnails appear scattered instead of top to bottom.
+    // Walking the list one wavefront at a time keeps every core busy AND
+    // fills the screen in reading order: the rows you are looking at are
+    // finished before the ones below the fold are started.
+    let width = rayon::current_num_threads().max(1) * 2;
+    for wave in items.chunks(width) {
         if cancelled() {
-            return; // a newer folder is waiting: drop the rest of this batch
+            return;
         }
-        let out = ensure_thumb(cache, Path::new(path), *kind, tsize).unwrap_or(ThumbOut {
-            src: path.clone(),
-            thumb: String::new(),
-            w: 0,
-            h: 0,
-            ok: false,
+        wave.par_iter().for_each(|(path, kind)| {
+            if cancelled() {
+                return; // a newer folder is waiting: drop the rest
+            }
+            let failed = || ThumbOut {
+                src: path.clone(),
+                thumb: String::new(),
+                w: 0,
+                h: 0,
+                ok: false,
+            };
+            let _watch = crate::watchdog::Watch::start(path);
+            // A decoder that panics on one strange file used to unwind
+            // through the whole wave and end the request: every picture
+            // after it stayed blank. Contain it to that one file.
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ensure_thumb(cache, Path::new(path), *kind, tsize)
+            }))
+            .unwrap_or_else(|_| {
+                crate::watchdog::log(&format!("decoder panicked on {path}"));
+                None
+            })
+            .unwrap_or_else(failed);
+            emit(out);
         });
-        emit(out);
-    });
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +253,103 @@ mod tests {
 
         let t = ensure_thumb(&cache, &src, EntryKind::Image, 256).unwrap();
         assert!(t.thumb.ends_with(".png"));
+    }
+
+    /// Thumbnails must come back roughly in the order they were asked for:
+    /// the first screenful before anything below the fold. A plain par_iter
+    /// over the whole slice fails this - it starts threads in the middle.
+    #[test]
+    fn results_follow_the_requested_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let mut items = Vec::new();
+        for i in 0..200 {
+            let p = tmp.path().join(format!("o{i:03}.jpg"));
+            make_jpeg(&p, 900, 600);
+            items.push((p.to_string_lossy().to_string(), EntryKind::Image));
+        }
+        let order = std::sync::Mutex::new(Vec::new());
+        batch(&cache, &items, 256, |out| {
+            let name = Path::new(&out.src).file_stem().unwrap().to_string_lossy().to_string();
+            order.lock().unwrap().push(name[1..].parse::<usize>().unwrap());
+        }, || false);
+
+        let seen = order.lock().unwrap();
+        assert_eq!(seen.len(), items.len());
+        // Every one of the first fifty must be done before the last fifty
+        // start: exact order inside a wavefront is up to the pool.
+        let first_fifty_end = seen.iter().position(|&i| i >= 150).unwrap_or(seen.len());
+        let early = seen[..first_fifty_end].iter().filter(|&&i| i < 50).count();
+        assert_eq!(early, 50, "the top of the list must be finished first");
+    }
+
+    /// Reproduction of the reported stall: a folder full of BIG pictures is
+    /// generating, the user opens another folder, and its thumbnails must
+    /// start arriving promptly. Run explicitly:
+    ///   cargo test --release --lib repro_switch_folder -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn repro_switch_folder() {
+        use std::sync::atomic::AtomicU64;
+        use std::sync::Arc;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Arc::new(ThumbCache::open(&tmp.path().join("cache")).unwrap());
+
+        // Folder A: big pictures, the kind that take seconds each.
+        let a_dir = tmp.path().join("A");
+        std::fs::create_dir_all(&a_dir).unwrap();
+        let mut a_items = Vec::new();
+        let t_gen = Instant::now();
+        for i in 0..96 {
+            let p = a_dir.join(format!("big{i:03}.png"));
+            let img = RgbImage::from_fn(7680, 4320, |x, y| {
+                Rgb([(x / 30 % 255) as u8, (y / 17 % 255) as u8, ((x ^ y) % 255) as u8])
+            });
+            img.save(&p).unwrap();
+            a_items.push((p.to_string_lossy().to_string(), EntryKind::Image));
+        }
+        // Folder B: ordinary pictures, never seen before.
+        let b_dir = tmp.path().join("B");
+        std::fs::create_dir_all(&b_dir).unwrap();
+        let mut b_items = Vec::new();
+        for i in 0..48 {
+            let p = b_dir.join(format!("small{i:03}.jpg"));
+            make_jpeg(&p, 1600, 1000);
+            b_items.push((p.to_string_lossy().to_string(), EntryKind::Image));
+        }
+        println!("fixtures ready in {:?}", t_gen.elapsed());
+
+        let gen = Arc::new(AtomicU64::new(1));
+        let a_done = Arc::new(AtomicUsize::new(0));
+        let start = Instant::now();
+
+        // Start folder A, exactly like request_thumbs does.
+        let (c, g, d) = (cache.clone(), gen.clone(), a_done.clone());
+        let a_thread = std::thread::spawn(move || {
+            batch(&c, &a_items, 256, |_| { d.fetch_add(1, Ordering::SeqCst); },
+                  || g.load(Ordering::SeqCst) != 1);
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        println!("A after 0.6 s: {} done", a_done.load(Ordering::SeqCst));
+
+        // The user opens folder B.
+        gen.store(2, Ordering::SeqCst);
+        let switched = Instant::now();
+        let first_b = std::sync::Mutex::new(None::<std::time::Duration>);
+        let b_done = AtomicUsize::new(0);
+        batch(&cache, &b_items, 256, |_| {
+            let mut f = first_b.lock().unwrap();
+            if f.is_none() { *f = Some(switched.elapsed()); }
+            b_done.fetch_add(1, Ordering::SeqCst);
+        }, || gen.load(Ordering::SeqCst) != 2);
+        let all_b = switched.elapsed();
+
+        a_thread.join().unwrap();
+        println!("A stopped {:?} after the switch", switched.elapsed());
+        println!("B first thumbnail after {:?}", first_b.lock().unwrap().unwrap());
+        println!("B all {} thumbnails after {:?}", b_done.load(Ordering::SeqCst), all_b);
+        println!("total {:?}", start.elapsed());
     }
 
     /// A cancelled batch must stop decoding, not merely stop reporting.

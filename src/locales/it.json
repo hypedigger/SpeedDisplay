@@ -203,5 +203,22 @@
   "clearPlayExit": "Svuota i video convertiti alla chiusura",
   "tipClearPlayExit": "La cartella play contiene copie complete dei suoi video (convertiti per la riproduzione) e le anteprime RAW a grandezza naturale. Svuotarla libera molto spazio; la prima riproduzione di un video non supportato sarà di nuovo lenta.",
   "clearPlayNow": "Svuota i video convertiti ora",
-  "freed": "Liberati:"
+  "freed": "Liberati:",
+  "favHide": "Nascondi nei preferiti",
+  "favUnhide": "Non nascondere più",
+  "favShowHidden": "Mostra i preferiti nascosti",
+  "favHideAgain": "Nascondi di nuovo",
+  "goFullscreen": "Passa a schermo intero",
+  "goWindowed": "Torna a finestra",
+  "goGrid": "Torna alle miniature",
+  "purgeOrphans": "Rimuovi i file scomparsi",
+  "tipPurgeOrphans": "Elimina dalla cache miniature, video convertiti, voti e posizioni di riproduzione dei file che non esistono più. I file di un disco scollegato vengono conservati: sono assenti, non eliminati.",
+  "purgeDone": "Cache ripulita:",
+  "purgeRecords": "schede",
+  "purgeOffline": "ignorati (disco scollegato)",
+  "dragToMove": "Trascina per spostare",
+  "spreadTip": "Disposizione del visualizzatore",
+  "spreadSingle": "Un'immagine alla volta",
+  "spreadDouble": "Due immagini affiancate",
+  "spreadCover": "Due immagini affiancate, la prima da sola (copertina)"
 }

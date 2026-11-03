@@ -6,15 +6,22 @@
 
 ## Features
 
-- **Virtualized thumbnail grid** — stays smooth with thousands of files; alternative list view
-- **Parallel thumbnail generation** (rayon, all CPU cores) with a persistent SQLite + JPEG/PNG cache
+- **Virtualized thumbnail grid and details view** — both stay smooth with tens of thousands of files
+- **Parallel thumbnail generation** (rayon, all CPU cores) with a persistent SQLite + JPEG/PNG cache; the visible rows are filled first, top to bottom, and switching folder abandons the previous one at once
+- **Damaged files still get a thumbnail**: when the native decoder gives up on a truncated picture, FFmpeg renders the part that is there
 - **Images**: JPEG, PNG, GIF, BMP, TIFF, WebP, ICO, TGA, PNM — plus AVIF, HEIC, JXL, JP2, PSD, SVG through FFmpeg (depending on your FFmpeg build)
 - **RAW**: near-instant display via the embedded JPEG preview (CR2, CR3, NEF, ARW, RW2, RAF, ORF, DNG…)
 - **Videos**: thumbnails, animated hover previews (live or pre-generated), direct playback, lossless MKV→MP4 remux, NVENC transcode as a last resort
-- **Fullscreen viewer**: wheel zoom, keyboard navigation, neighbor preloading
-- Rename, **Recycle Bin** delete (never hard-deletes), reveal in Explorer
-- Duplicate detection, search, EXIF rotation, XMP metadata
-- Dark/light themes, 6 languages, persistent settings
+- **Viewer**: windowed or true fullscreen, wheel zoom anchored on the cursor, hold the right button for a 100 % loupe you can drag and zoom, neighbor preloading
+- **Two-page view**, like a PDF reader: pictures side by side, optionally with the first one alone as a cover page
+- **Video player**: resumes where you stopped, compact floating transport bar in fullscreen, wheel over the bar to seek
+- **Mouse Back/Forward buttons** step through the display modes (thumbnails, window, fullscreen)
+- **Safe file operations**: copy, cut, paste, drag and drop, merge of same-name folders, overwrites go to the **Recycle Bin**, a move never deletes its source before the copy is verified, conflict dialog with a side-by-side comparison
+- **Windows clipboard interop**: copy in SpeedDisplay, paste in Explorer, and the other way round
+- Ratings, colour labels, keywords, duplicate detection, search, lossless EXIF rotation, XMP sidecars
+- Favourites (with hidden ones), resolution / megapixel / ratio columns, capture date and camera in the properties
+- 24 themes, 6 languages, fully configurable shortcuts, persistent settings
+- **Cache housekeeping**: least-recently-used eviction, optional wipe of converted videos on exit, and removal of entries whose original file is gone (files on a disconnected drive are left alone)
 
 ## Setup (one time)
 
@@ -68,6 +75,9 @@ Design notes:
 
 - HEIC/AVIF/JXL support depends on the codecs included in the winget FFmpeg build.
 - `core` and `src-tauri` are intentionally **outside a Cargo workspace** (version constraints).
+- Rotating a RAW file is shown in SpeedDisplay and written to the file's own tag, but Lightroom and Bridge keep their own orientation for raws and will not pick it up (no sidecar file is created).
+- Dragging files **out** of SpeedDisplay into Explorer is not supported (dragging in is); use copy / paste instead.
+- Diagnostics: decodes that never finish, or crash, are named in `speeddisplay.log` in the cache folder.
 
 ## Support
 

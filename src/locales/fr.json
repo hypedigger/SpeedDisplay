@@ -203,5 +203,22 @@
   "clearPlayExit": "Vider les vidéos converties à la fermeture",
   "tipClearPlayExit": "Le dossier « play » contient des copies complètes de vos vidéos (converties pour la lecture) et les aperçus pleine taille des RAW. Les vider libère beaucoup d'espace ; la première lecture d'une vidéo non supportée sera à nouveau lente.",
   "clearPlayNow": "Vider les vidéos converties maintenant",
-  "freed": "Libéré :"
+  "freed": "Libéré :",
+  "favHide": "Masquer dans les favoris",
+  "favUnhide": "Ne plus masquer",
+  "favShowHidden": "Afficher les favoris masqués",
+  "favHideAgain": "Masquer à nouveau",
+  "goFullscreen": "Passer en plein écran",
+  "goWindowed": "Revenir en mode fenêtré",
+  "goGrid": "Revenir aux vignettes",
+  "purgeOrphans": "Retirer les fichiers disparus",
+  "tipPurgeOrphans": "Supprime du cache les miniatures, vidéos converties, notes et positions de lecture des fichiers qui n'existent plus. Les fichiers d'un disque débranché sont conservés : ils ne sont pas supprimés, juste absents.",
+  "purgeDone": "Cache nettoyé :",
+  "purgeRecords": "fiches",
+  "purgeOffline": "ignorés (disque débranché)",
+  "dragToMove": "Glisser pour déplacer",
+  "spreadTip": "Disposition de la visionneuse",
+  "spreadSingle": "Une image à la fois",
+  "spreadDouble": "Deux images côte à côte",
+  "spreadCover": "Deux images côte à côte, la première seule (page de garde)"
 }

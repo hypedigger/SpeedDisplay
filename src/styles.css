@@ -299,6 +299,20 @@ button, select, input, textarea { font: inherit; color: inherit; }
   letter-spacing: 0.06em;
   padding: 12px 8px 4px;
 }
+/* The Favourites header doubles as the switch for the discreet ones. */
+.side-sep.has-hidden { cursor: pointer; }
+.side-sep.has-hidden::after {
+  content: "★";          /* a star: discreet favourites are folded away */
+  margin-left: 6px;
+  letter-spacing: 0.1em;
+  opacity: 0.55;
+}
+.side-sep.has-hidden:hover { color: var(--accent); }
+.side-sep.revealing { color: var(--accent); }
+.side-sep.revealing::after { opacity: 1; }
+/* A discreet favourite, while the section is open. */
+.fav-item.fav-hidden .fav-star { opacity: 0.35; }
+.fav-item.fav-hidden .fav-name { font-style: italic; opacity: 0.75; }
 .side-item {
   display: block;
   padding: 6px 10px;
@@ -572,7 +586,11 @@ button, select, input, textarea { font: inherit; color: inherit; }
 }
 #list th { position: sticky; top: 0; background: var(--bg2); color: var(--fg-dim); cursor: pointer; user-select: none; }
 #list th:hover { color: var(--accent); }
+/* Row height is measured at runtime (the text size is a user setting), so
+   nothing here may make one row taller than another. */
 #list tbody tr { cursor: pointer; }
+#list tbody tr.spacer { cursor: default; background: none; }
+#list tbody tr.spacer:hover { background: none; }
 #list tbody tr:hover { background: var(--bg3); }
 #list tbody tr.selected { background: var(--sel); }
 
@@ -687,6 +705,8 @@ button, select, input, textarea { font: inherit; color: inherit; }
 }
 .ov-btn:hover { background: rgba(255, 255, 255, 0.2); }
 .ov-close { top: 16px; right: 16px; }
+/* The mode switch sits just left of the "back to thumbnails" button. */
+.ov-mode { top: 16px; right: 74px; }
 /* Prev/next: size driven by the settings slider (100-300% of 46px). */
 .ov-prev, .ov-next {
   width: var(--nav-btn, 92px);
@@ -731,10 +751,17 @@ html.overlay-fs #strip, html.overlay-fs #exif-panel { display: none !important; 
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
-  padding: 22px 26px;
-  width: 460px;
-  /* Fixed height: the tab bar never moves, whatever the pane content. */
+  padding: 18px 26px 22px;
+  /* Twice the former 460 px. The user can resize it (the grip is the
+     bottom-right corner) and the size is remembered. */
+  width: 920px;
   height: 80vh;
+  min-width: 420px;
+  min-height: 320px;
+  max-width: 96vw;
+  max-height: 96vh;
+  resize: both;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -886,7 +913,30 @@ html.overlay-fs #strip, html.overlay-fs #exif-panel { display: none !important; 
   outline: none;
 }
 #btn-clear-cache { margin-left: auto; }
-#settings-close { align-self: flex-end; }
+/* Header bar: drag handle for the whole window, close cross on the right. */
+#settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -4px -8px 0 0;
+  cursor: grab;
+  user-select: none;
+}
+#settings-head.dragging { cursor: grabbing; }
+#settings-x {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 16px;
+  cursor: pointer;
+}
+#settings-x:hover { background: rgba(224, 85, 85, 0.22); color: #e05555; }
 
 /* ---------- Context menu (Windows 11 style) ---------- */
 #ctx-menu {
@@ -1569,3 +1619,89 @@ tr.drop-target td {
   background: var(--accent);
 }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- Language picker with drawn flags ---------- */
+#lang-picker { position: relative; }
+#lang-btn, .lang-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-radius: 7px;
+  font: inherit;
+  color: var(--fg);
+  cursor: pointer;
+}
+#lang-btn {
+  min-width: 190px;
+  padding: 6px 10px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+}
+#lang-btn:hover { border-color: var(--accent); }
+#lang-btn span:nth-child(2) { flex: 1; text-align: left; }
+.lang-caret { color: var(--fg-dim); font-size: 0.9em; }
+.flag {
+  width: 21px;
+  height: 14px;
+  flex: none;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+#lang-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  min-width: 100%;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+#lang-list[hidden] { display: none; }
+.lang-item {
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  white-space: nowrap;
+}
+.lang-item:hover { background: var(--bg3); }
+.lang-item.current { color: var(--accent); font-weight: 600; }
+
+/* ---------- Two-page view (toolbar control + layout) ---------- */
+#spread-seg {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.spread-btn {
+  display: grid;
+  place-items: center;
+  padding: 4px 9px;
+}
+.spread-btn svg {
+  width: 22px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+}
+/* The active choice fills its pages, so the state reads at a glance. */
+.spread-btn.active svg rect { fill: currentColor; fill-opacity: 0.28; }
+
+/* In the viewer, a spread lays the two pages edge to edge, like a book
+   lying open, with a hairline where they meet. */
+#viewer-rot.spread { display: flex; align-items: stretch; }
+#viewer-rot.spread #viewer-img,
+#viewer-rot.spread #viewer-img2 {
+  position: static;
+  transform: none !important;
+  flex: none;
+}
+#viewer-rot.spread #viewer-img2 { box-shadow: -1px 0 0 rgba(0, 0, 0, 0.55); }

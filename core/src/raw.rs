@@ -178,17 +178,23 @@ fn scan_for_jpeg(file: &mut File) -> Option<Vec<u8>> {
         if buf[i] == 0xFF && buf[i + 1] == 0xD8 && buf[i + 2] == 0xFF {
             // Find the matching EOI.
             let mut j = i + 2;
+            let mut end = None;
             while j + 1 < buf.len() {
                 if buf[j] == EOI[0] && buf[j + 1] == EOI[1] {
-                    let len = j + 2 - i;
-                    if len > 8 * 1024 && best.map(|(_, l)| len > l).unwrap_or(true) {
-                        best = Some((i, len));
-                    }
+                    end = Some(j + 2);
                     break;
                 }
                 j += 1;
             }
-            i = if let Some((s, l)) = best { s + l } else { i + 2 };
+            let Some(end) = end else { break }; // no EOI left: nothing more to find
+            let len = end - i;
+            if len > 8 * 1024 && best.map(|(_, l)| len > l).unwrap_or(true) {
+                best = Some((i, len));
+            }
+            // Always move FORWARD, past the JPEG just examined. The old code
+            // jumped to the end of the best one so far, which lies BEHIND the
+            // cursor as soon as a smaller JPEG follows a bigger one: endless loop.
+            i = end;
         } else {
             i += 1;
         }
@@ -216,6 +222,58 @@ fn read_u32(b: &[u8], little: bool) -> u32 {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// Which path a real file takes. Run with SD_PROBE=<path>.
+    #[test]
+    #[ignore]
+    fn probe_real_file() {
+        let Ok(p) = std::env::var("SD_PROBE") else { return };
+        let mut f = File::open(&p).unwrap();
+        let tiff = extract_from_tiff(&mut f);
+        println!("extract_from_tiff: {:?}", tiff.as_ref().map(|v| v.len()));
+        let mut f = File::open(&p).unwrap();
+        let t = std::time::Instant::now();
+        let scan = scan_for_jpeg(&mut f);
+        println!("scan_for_jpeg:     {:?} in {:?}", scan.as_ref().map(|v| v.len()), t.elapsed());
+    }
+
+    /// A container holding a big preview JPEG followed by a smaller one - the
+    /// usual layout of a raw file - used to send the fallback scanner into an
+    /// endless loop: the second, smaller JPEG did not beat the record, and the
+    /// cursor was sent BACK to the end of the first one, forever. Each such
+    /// file swallowed one decoding thread for good; enough of them and no
+    /// thumbnail could be produced anywhere until the app was restarted.
+    #[test]
+    fn scan_terminates_when_a_smaller_jpeg_follows_a_bigger_one() {
+        fn fake_jpeg(body: usize) -> Vec<u8> {
+            let mut v = vec![0xFF, 0xD8, 0xFF, 0xE0];
+            v.extend(std::iter::repeat(0x11u8).take(body));
+            v.extend([0xFF, 0xD9]);
+            v
+        }
+        let mut blob = vec![0u8; 64];
+        blob.extend(fake_jpeg(40 * 1024)); // the preview
+        blob.extend(vec![0u8; 512]);
+        blob.extend(fake_jpeg(12 * 1024)); // the smaller thumbnail, after it
+        blob.extend(vec![0u8; 512]);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("two_jpegs.bin");
+        std::fs::write(&p, &blob).unwrap();
+
+        // Run in a thread so a regression fails the test instead of hanging it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut f = File::open(&p).unwrap();
+            let _ = tx.send(scan_for_jpeg(&mut f));
+        });
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("scan_for_jpeg never returned: endless loop");
+        let jpeg = got.expect("a JPEG should have been found");
+        assert_eq!(jpeg.len(), 4 + 40 * 1024 + 2, "the BIGGER of the two must win");
+    }
+
 
     /// Build a minimal little-endian TIFF embedding one JPEG via 0x0201/0x0202,
     /// mimicking how Sony ARW exposes its preview.

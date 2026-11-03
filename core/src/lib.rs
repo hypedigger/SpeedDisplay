@@ -2,6 +2,7 @@
 // Everything here is pure library code, unit-tested headless.
 
 pub mod cache;
+pub mod fileops;
 pub mod duplicates;
 pub mod exifwrite;
 pub mod xmp;
@@ -10,6 +11,7 @@ pub mod scan;
 pub mod search;
 pub mod thumbs;
 pub mod video;
+pub mod watchdog;
 
 use serde::{Deserialize, Serialize};
 
