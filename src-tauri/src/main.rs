@@ -482,6 +482,7 @@ async fn paste_files(
     let generation = state.paste_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let gen_ref = state.paste_gen.clone();
     let app2 = app.clone();
+    let cache = state.cache.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // The engine lives in lumen_core, where it is tested headless; this
         // layer only lends it a progress channel, a cancel flag and a bin.
@@ -514,6 +515,12 @@ async fn paste_files(
             // Overwriting always goes through the recycle bin.
             &|p| trash::delete(p).map_err(|e| std::io::Error::other(e.to_string())),
         );
+        // Ratings, rotations and thumbnails go where the pictures went - and
+        // a copy gets its own record. Also covers what was done before a
+        // cancellation: those files did move.
+        if let Ok(o) = &outcome {
+            cache.follow_files(&o.pairs, cut);
+        }
         let cancelled = outcome.as_ref().map(|o| o.cancelled).unwrap_or(false);
         let _ = app2.emit(
             "paste-done",
@@ -737,14 +744,17 @@ fn create_folder(parent: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn rename_file(path: String, new_name: String) -> Result<String, String> {
+fn rename_file(state: State<'_, AppState>, path: String, new_name: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     let dest = p.with_file_name(&new_name);
     if dest.exists() {
         return Err("exists".into());
     }
     std::fs::rename(&p, &dest).map_err(|e| e.to_string())?;
-    Ok(dest.to_string_lossy().to_string())
+    let dest = dest.to_string_lossy().to_string();
+    // A renamed picture (or folder) keeps what is attached to it.
+    state.cache.follow_files(&[(path, dest.clone())], true);
+    Ok(dest)
 }
 
 #[tauri::command]
@@ -1229,8 +1239,9 @@ async fn convert_batch(
 
 /// Rename `pairs` of (absolute source path, new file name). Skips collisions.
 #[tauri::command]
-fn rename_batch(pairs: Vec<(String, String)>) -> Result<u32, String> {
+fn rename_batch(state: State<'_, AppState>, pairs: Vec<(String, String)>) -> Result<u32, String> {
     let mut ok = 0u32;
+    let mut renamed = Vec::new();
     for (src, new_name) in pairs {
         let p = PathBuf::from(&src);
         let dest = p.with_file_name(&new_name);
@@ -1239,8 +1250,10 @@ fn rename_batch(pairs: Vec<(String, String)>) -> Result<u32, String> {
         }
         if std::fs::rename(&p, &dest).is_ok() {
             ok += 1;
+            renamed.push((src, dest.to_string_lossy().to_string()));
         }
     }
+    state.cache.follow_files(&renamed, true);
     Ok(ok)
 }
 

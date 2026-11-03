@@ -18,7 +18,7 @@
 - **Mouse Back/Forward buttons** step through the display modes (thumbnails, window, fullscreen)
 - **Safe file operations**: copy, cut, paste, drag and drop, merge of same-name folders, overwrites go to the **Recycle Bin**, a move never deletes its source before the copy is verified, conflict dialog with a side-by-side comparison
 - **Windows clipboard interop**: copy in SpeedDisplay, paste in Explorer, and the other way round
-- Ratings, colour labels, keywords, duplicate detection, search, lossless EXIF rotation, XMP sidecars
+- Ratings, colour labels, keywords and rotations that follow the file when it is moved, renamed or copied; duplicate detection, search, lossless EXIF rotation, XMP sidecars
 - Favourites (with hidden ones), resolution / megapixel / ratio columns, capture date and camera in the properties
 - 24 themes, 6 languages, fully configurable shortcuts, persistent settings
 - **Cache housekeeping**: least-recently-used eviction, optional wipe of converted videos on exit, and removal of entries whose original file can no longer be found

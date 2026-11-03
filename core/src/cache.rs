@@ -255,6 +255,93 @@ impl ThumbCache {
         freed
     }
 
+    /// Carry ratings, labels, keywords, rotations and playback positions
+    /// along with files that were moved (`cut`) or copied. Each pair is what
+    /// the user moved: a file, or a folder whose whole subtree follows.
+    ///
+    /// The database identifies a picture by its path, so without this a move
+    /// silently dropped everything attached to it - a rotated raw came back
+    /// unrotated in its new folder.
+    ///
+    /// A row is carried only when the destination file now exists and, for a
+    /// move, the source is really gone: inside a merge, a file kept back by
+    /// "skip" stays where it was, and so does its record. Moved thumbnails are
+    /// carried too, so the moved pictures show without being decoded again.
+    /// Returns the number of records carried.
+    pub fn follow_files(&self, pairs: &[(String, String)], cut: bool) -> u64 {
+        let Ok(mut conn) = self.conn.lock() else { return 0 };
+        let Ok(tx) = conn.transaction() else { return 0 };
+        let mut carried = 0u64;
+        for (src, dst) in pairs {
+            // The item itself, and everything under it when it is a folder.
+            // A plain prefix test, not LIKE: paths are full of '_' and '%'.
+            let under = |p: &str| {
+                p == src
+                    || (p.len() > src.len()
+                        && p.starts_with(src.as_str())
+                        && matches!(p.as_bytes()[src.len()], b'\\' | b'/'))
+            };
+            let rows: Vec<String> = tx
+                .prepare("SELECT path FROM meta WHERE substr(path, 1, length(?1)) = ?1")
+                .and_then(|mut st| {
+                    st.query_map(params![src], |r| r.get::<_, String>(0))
+                        .map(|rows| rows.flatten().collect())
+                })
+                .unwrap_or_default();
+            for old in rows.into_iter().filter(|p| under(p)) {
+                let new = format!("{dst}{}", &old[src.len()..]);
+                let arrived = Path::new(&new).exists();
+                let left = !Path::new(&old).exists();
+                if !arrived || (cut && !left) {
+                    continue;
+                }
+                let parent = Path::new(&new)
+                    .parent()
+                    .map(|d| d.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let done = if cut {
+                    tx.execute(
+                        "UPDATE OR REPLACE meta SET path=?2, parent=?3 WHERE path=?1",
+                        params![old, new, parent],
+                    )
+                } else {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO meta (path, parent, rating, color, flag, tags, rot, taken, pos, dur)
+                         SELECT ?2, ?3, rating, color, flag, tags, rot, taken, pos, dur FROM meta WHERE path=?1",
+                        params![old, new, parent],
+                    )
+                };
+                if done.map(|n| n > 0).unwrap_or(false) {
+                    carried += 1;
+                }
+            }
+            if cut {
+                // Thumbnails too: same pixels, same date, same size - only
+                // the path changed, so the cached picture is still right.
+                let thumbs: Vec<String> = tx
+                    .prepare("SELECT DISTINCT path FROM thumbs WHERE substr(path, 1, length(?1)) = ?1")
+                    .and_then(|mut st| {
+                        st.query_map(params![src], |r| r.get::<_, String>(0))
+                            .map(|rows| rows.flatten().collect())
+                    })
+                    .unwrap_or_default();
+                for old in thumbs.into_iter().filter(|p| under(p)) {
+                    let new = format!("{dst}{}", &old[src.len()..]);
+                    if Path::new(&new).exists() && !Path::new(&old).exists() {
+                        let _ = tx.execute(
+                            "UPDATE OR REPLACE thumbs SET path=?2 WHERE path=?1",
+                            params![old, new],
+                        );
+                    }
+                }
+            }
+        }
+        if tx.commit().is_err() {
+            return 0;
+        }
+        carried
+    }
+
     /// Remember which original a cache file was made from. Thumbnails have
     /// their own table; the files ffmpeg produces (video thumbnails, previews,
     /// converted videos) only had a hash for a name - this is their link back.
@@ -930,6 +1017,99 @@ mod tests {
         assert_eq!(rep.originals, 1, "the moved file is gone");
         assert_eq!(rep.reattached, 1, "the picture still in the folder gets its row back");
         assert!(thumb.exists(), "and keeps its thumbnail");
+    }
+
+    /// Moving a picture takes its rating, rotation and thumbnail along.
+    #[test]
+    fn records_follow_a_moved_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let a = tmp.path().join("in_box");
+        let b = tmp.path().join("sorted_100%");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let src = a.join("raw_01.arw");
+        std::fs::write(&src, b"x").unwrap();
+        let (s, d) = (src.to_string_lossy().to_string(), b.join("raw_01.arw").to_string_lossy().to_string());
+        c.set_meta(&s, &a.to_string_lossy(), Some(4), None, None, None, Some(270));
+        c.put(&s, 1, 1, 330, "t.jpg", 1, 1);
+
+        std::fs::rename(&src, b.join("raw_01.arw")).unwrap();
+        assert_eq!(c.follow_files(&[(s.clone(), d.clone())], true), 1);
+
+        let moved = c.dir_meta(&b.to_string_lossy());
+        assert_eq!(moved.len(), 1, "the record lives in the new folder");
+        assert_eq!((moved[0].rating, moved[0].rot), (4, 270));
+        assert!(c.dir_meta(&a.to_string_lossy()).is_empty(), "and no longer in the old one");
+        let carried: i64 = c.conn.lock().unwrap()
+            .query_row("SELECT count(*) FROM thumbs WHERE path=?1", params![d], |r| r.get(0)).unwrap();
+        assert_eq!(carried, 1, "the thumbnail row follows as well");
+    }
+
+    /// Moving a folder carries every record in its subtree, with the right
+    /// parent folder for each, and leaves look-alike siblings alone.
+    #[test]
+    fn records_follow_a_moved_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let old = tmp.path().join("Trip");
+        let sibling = tmp.path().join("Trip 2"); // shares the prefix, must not move
+        std::fs::create_dir_all(old.join("day1")).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        for (f, r) in [(old.join("day1").join("a.jpg"), 3), (sibling.join("b.jpg"), 5)] {
+            std::fs::write(&f, b"x").unwrap();
+            c.set_meta(&f.to_string_lossy(), &f.parent().unwrap().to_string_lossy(), Some(r), None, None, None, None);
+        }
+        let new = tmp.path().join("Archive").join("Trip");
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        std::fs::rename(&old, &new).unwrap();
+
+        c.follow_files(&[(old.to_string_lossy().to_string(), new.to_string_lossy().to_string())], true);
+
+        let day1 = c.dir_meta(&new.join("day1").to_string_lossy());
+        assert_eq!(day1.len(), 1, "the nested record moved, parent updated");
+        assert_eq!(day1[0].rating, 3);
+        assert_eq!(c.dir_meta(&sibling.to_string_lossy())[0].rating, 5, "the look-alike folder is untouched");
+    }
+
+    /// A copy keeps the original's record and gives the copy its own.
+    #[test]
+    fn records_are_duplicated_on_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let src = tmp.path().join("p.jpg");
+        let dst = tmp.path().join("copy").join("p.jpg");
+        std::fs::write(&src, b"x").unwrap();
+        std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        std::fs::copy(&src, &dst).unwrap();
+        c.set_meta(&src.to_string_lossy(), &tmp.path().to_string_lossy(), Some(2), None, None, Some("sea".into()), None);
+
+        c.follow_files(&[(src.to_string_lossy().to_string(), dst.to_string_lossy().to_string())], false);
+
+        assert_eq!(c.dir_meta(&tmp.path().to_string_lossy())[0].tags, "sea", "the original keeps its record");
+        let copy = c.dir_meta(&dst.parent().unwrap().to_string_lossy());
+        assert_eq!((copy[0].rating, copy[0].tags.as_str()), (2, "sea"), "the copy gets the same");
+    }
+
+    /// In a merge with "skip", a file that stayed behind keeps its record
+    /// where it is - it did not move.
+    #[test]
+    fn a_file_left_behind_keeps_its_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let src_dir = tmp.path().join("From");
+        let dst_dir = tmp.path().join("To");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
+        let stayed = src_dir.join("clash.jpg");
+        std::fs::write(&stayed, b"src").unwrap();
+        std::fs::write(dst_dir.join("clash.jpg"), b"dst").unwrap(); // skipped: both exist
+        c.set_meta(&stayed.to_string_lossy(), &src_dir.to_string_lossy(), Some(1), None, None, None, None);
+
+        c.follow_files(&[(src_dir.to_string_lossy().to_string(), dst_dir.to_string_lossy().to_string())], true);
+
+        assert_eq!(c.dir_meta(&src_dir.to_string_lossy()).len(), 1, "still with the file that stayed");
+        assert!(c.dir_meta(&dst_dir.to_string_lossy()).is_empty(), "not given to the other file");
     }
 
     /// A changed original replaces its thumbnail AND removes the old file.
