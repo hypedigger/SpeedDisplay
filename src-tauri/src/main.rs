@@ -61,12 +61,16 @@ struct ThumbEvent {
     generation: u64,
 }
 
-#[tauri::command]
+// Commands that touch the disk or the cache database run off the main thread
+// (`async`). A plain command runs ON it: the moment it waits - a slow drive, a
+// database another task is writing - the whole window stops answering.
+// settings, set_meta and the clipboard stay ordered on the main thread on purpose.
+#[tauri::command(async)]
 fn list_roots() -> Vec<String> {
     scan::list_roots()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn home_dirs() -> Vec<(String, String)> {
     // (label, path) pairs for the sidebar shortcuts.
     let mut out = Vec::new();
@@ -83,7 +87,7 @@ fn home_dirs() -> Vec<(String, String)> {
     out
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_dir(path: String) -> Result<Vec<Entry>, String> {
     scan::list_dir(Path::new(&path)).map_err(|e| e.to_string())
 }
@@ -408,12 +412,12 @@ async fn prepare_video(state: State<'_, AppState>, path: String) -> Result<Playa
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn cache_size(state: State<'_, AppState>) -> u64 {
     state.cache.size_on_disk()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn cache_stats(state: State<'_, AppState>) -> lumen_core::cache::CacheStats {
     state.cache.stats()
 }
@@ -427,12 +431,12 @@ async fn enforce_cache_limit(state: State<'_, AppState>, max_bytes: u64) -> Resu
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn clear_cache(state: State<'_, AppState>) -> u64 {
     state.cache.clear()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_file(path: String) -> Result<(), String> {
     // Goes to the recycle bin, never a hard delete.
     trash::delete(&path).map_err(|e| e.to_string())
@@ -627,7 +631,7 @@ async fn file_props(path: String) -> Result<FileProps, String> {
     .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_attributes(path: String, readonly: bool, hidden: bool) -> Result<(), String> {
     let p = PathBuf::from(&path);
     let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
@@ -684,7 +688,7 @@ fn clip_get_files() -> Option<ClipFiles> {
 }
 
 /// Free and total bytes of the volume holding `path`.
-#[tauri::command]
+#[tauri::command(async)]
 fn disk_space(path: String) -> Option<(u64, u64)> {
     #[cfg(windows)]
     {
@@ -707,7 +711,7 @@ fn disk_space(path: String) -> Option<(u64, u64)> {
 }
 
 // ---------- XMP sidecars ----------
-#[tauri::command]
+#[tauri::command(async)]
 fn write_xmp(path: String, rating: i64, label: String, tags: String) -> Result<(), String> {
     let media = Path::new(&path);
     // Keep whatever orientation the sidecar already carries: ratings and
@@ -736,14 +740,14 @@ async fn read_xmp(paths: Vec<String>) -> Result<Vec<(String, lumen_core::xmp::Xm
 }
 
 /// Create a folder inside `parent` ("New folder", "New folder (2)"...).
-#[tauri::command]
+#[tauri::command(async)]
 fn create_folder(parent: String, name: String) -> Result<String, String> {
     let dest = unique_dest(Path::new(&parent), &name, true);
     std::fs::create_dir(&dest).map_err(|e| e.to_string())?;
     Ok(dest.to_string_lossy().to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn rename_file(state: State<'_, AppState>, path: String, new_name: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     let dest = p.with_file_name(&new_name);
@@ -793,7 +797,7 @@ fn save_settings(app: tauri::AppHandle, value: serde_json::Value) {
 }
 
 // ---------- Metadata (rating / colour / pick-reject / tags) ----------
-#[tauri::command]
+#[tauri::command(async)]
 fn dir_meta(state: State<'_, AppState>, parent: String) -> Vec<lumen_core::cache::MetaRow> {
     state.cache.dir_meta(&parent)
 }
@@ -904,7 +908,7 @@ async fn purge_orphans(
 
 /// Delete everything in the `play` folder: the converted videos and the
 /// full-size previews, which are copies of the user's own media.
-#[tauri::command]
+#[tauri::command(async)]
 fn clear_play(state: State<'_, AppState>) -> u64 {
     state.cache.clear_play()
 }
@@ -951,7 +955,7 @@ async fn video_durations(
 }
 
 /// Remember where a video was left, so it resumes there next time.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_video_pos(state: State<'_, AppState>, path: String, parent: String, pos: f64) {
     state.cache.set_pos(&path, &parent, pos);
 }
@@ -998,7 +1002,7 @@ async fn capture_dates(
 
 // ---------- EXIF / dimensions ----------
 /// Header-only pixel dimensions — fast enough to call before display.
-#[tauri::command]
+#[tauri::command(async)]
 fn image_dims(path: String) -> Option<(u32, u32)> {
     lumen_core::image_dims(Path::new(&path))
 }
@@ -1238,7 +1242,7 @@ async fn convert_batch(
 }
 
 /// Rename `pairs` of (absolute source path, new file name). Skips collisions.
-#[tauri::command]
+#[tauri::command(async)]
 fn rename_batch(state: State<'_, AppState>, pairs: Vec<(String, String)>) -> Result<u32, String> {
     let mut ok = 0u32;
     let mut renamed = Vec::new();
@@ -1360,7 +1364,7 @@ fn file_icon(state: State<'_, AppState>, path: String) -> Option<String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_wallpaper(path: String) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -1422,7 +1426,7 @@ fn associate_files(exts: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_with(path: String, exe: String) -> Result<(), String> {
     std::process::Command::new(&exe)
         .arg(&path)

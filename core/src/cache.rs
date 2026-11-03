@@ -281,10 +281,14 @@ impl ThumbCache {
                         && p.starts_with(src.as_str())
                         && matches!(p.as_bytes()[src.len()], b'\\' | b'/'))
             };
+            // A range on the primary key instead of substr(): the index does
+            // the work, where substr() scanned the whole table once per file
+            // (two seconds for 275 files, with the database locked).
+            let upper = format!("{src}\u{10FFFF}");
             let rows: Vec<String> = tx
-                .prepare("SELECT path FROM meta WHERE substr(path, 1, length(?1)) = ?1")
+                .prepare("SELECT path FROM meta WHERE path >= ?1 AND path < ?2")
                 .and_then(|mut st| {
-                    st.query_map(params![src], |r| r.get::<_, String>(0))
+                    st.query_map(params![src, upper], |r| r.get::<_, String>(0))
                         .map(|rows| rows.flatten().collect())
                 })
                 .unwrap_or_default();
@@ -319,9 +323,9 @@ impl ThumbCache {
                 // Thumbnails too: same pixels, same date, same size - only
                 // the path changed, so the cached picture is still right.
                 let thumbs: Vec<String> = tx
-                    .prepare("SELECT DISTINCT path FROM thumbs WHERE substr(path, 1, length(?1)) = ?1")
+                    .prepare("SELECT DISTINCT path FROM thumbs WHERE path >= ?1 AND path < ?2")
                     .and_then(|mut st| {
-                        st.query_map(params![src], |r| r.get::<_, String>(0))
+                        st.query_map(params![src, upper], |r| r.get::<_, String>(0))
                             .map(|rows| rows.flatten().collect())
                     })
                     .unwrap_or_default();
@@ -1125,6 +1129,41 @@ mod tests {
         c.put("E:/p.jpg", 2, 2, 330, &b.to_string_lossy(), 1, 1);
         assert!(!a.exists(), "the superseded thumbnail is gone");
         assert!(b.exists());
+    }
+
+    /// Moving 275 files with a 55 000-row cache, the size met in real use.
+    /// Run: cargo test --release --lib follow_at_scale -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn follow_at_scale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let sub = tmp.path().join("album").join("part1");
+        let parent = tmp.path().join("album");
+        std::fs::create_dir_all(&sub).unwrap();
+        {
+            let mut conn = c.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            for i in 0..55_000u32 {
+                tx.execute(
+                    "INSERT INTO thumbs (path, mtime, size, tsize, thumb, w, h) VALUES (?1,1,1,330,?2,1,1)",
+                    params![format!("E:\\elsewhere\\folder{}\\img{i}.jpg", i % 900), format!("t{i}.jpg")],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let mut pairs = Vec::new();
+        for i in 0..275u32 {
+            let from = sub.join(format!("f{i}.jpg"));
+            let to = parent.join(format!("f{i}.jpg"));
+            std::fs::write(&to, b"x").unwrap(); // already moved on disk
+            c.put(&from.to_string_lossy(), 1, 1, 330, &format!("m{i}.jpg"), 1, 1);
+            pairs.push((from.to_string_lossy().to_string(), to.to_string_lossy().to_string()));
+        }
+        let t = std::time::Instant::now();
+        c.follow_files(&pairs, true);
+        println!("follow_files: {} pairs over {} rows took {:?}", pairs.len(), 55_275, t.elapsed());
     }
 
     #[test]
