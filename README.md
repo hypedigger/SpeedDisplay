@@ -7,7 +7,8 @@
 ## Features
 
 - **Virtualized thumbnail grid and details view** — both stay smooth with tens of thousands of files
-- **Parallel thumbnail generation** (rayon, all CPU cores) with a persistent SQLite + JPEG/PNG cache; the visible rows are filled first, top to bottom, and switching folder abandons the previous one at once
+- **Parallel thumbnail generation** (rayon, all CPU cores) with a persistent SQLite + JPEG/PNG cache; what is on screen is generated first, then the next screen; a slow picture never holds the others, and switching folder abandons the previous one at once
+- **One name order everywhere** (folder tree and listing, natural numbers); the recursive "show everything" view reads like the tree: a folder's files, then each subfolder in turn
 - **Damaged files still get a thumbnail**: when the native decoder gives up on a truncated picture, FFmpeg renders the part that is there
 - **Images**: JPEG, PNG, GIF, BMP, TIFF, WebP, ICO, TGA, PNM — plus AVIF, HEIC, JXL, JP2, PSD, SVG through FFmpeg (depending on your FFmpeg build)
 - **RAW**: near-instant display via the embedded JPEG preview (CR2, CR3, NEF, ARW, RW2, RAF, ORF, DNG…)

@@ -12,8 +12,8 @@
 use crate::cache::ThumbCache;
 use crate::{fnv1a64, raw, EntryKind};
 use image::{DynamicImage, GenericImageView};
-use rayon::prelude::*;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ThumbOut {
@@ -175,40 +175,44 @@ pub fn batch<F, C>(
     // Order matters as much as speed here. `par_iter` over the whole slice
     // splits it across the pool, so a thread starts in the middle of the
     // batch and thumbnails appear scattered instead of top to bottom.
-    // Walking the list one wavefront at a time keeps every core busy AND
-    // fills the screen in reading order: the rows you are looking at are
-    // finished before the ones below the fold are started.
-    let width = rayon::current_num_threads().max(1) * 2;
-    for wave in items.chunks(width) {
-        if cancelled() {
-            return;
+    // Every worker takes the NEXT item of the list instead: work starts in
+    // exactly the requested order (the UI puts what is on screen first),
+    // and a picture that takes twenty seconds to decode holds one thread,
+    // not the whole screen. (Waves of 2x the cores used to wait for their
+    // slowest member before the next wave could start.)
+    let next = AtomicUsize::new(0);
+    let workers = rayon::current_num_threads().max(1);
+    rayon::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|_| loop {
+                if cancelled() {
+                    return; // a newer folder is waiting: drop the rest
+                }
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                let Some((path, kind)) = items.get(i) else { return };
+                let failed = || ThumbOut {
+                    src: path.clone(),
+                    thumb: String::new(),
+                    w: 0,
+                    h: 0,
+                    ok: false,
+                };
+                let _watch = crate::watchdog::Watch::start(path);
+                // A decoder that panics on one strange file used to unwind
+                // through the whole wave and end the request: every picture
+                // after it stayed blank. Contain it to that one file.
+                let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    ensure_thumb(cache, Path::new(path), *kind, tsize)
+                }))
+                .unwrap_or_else(|_| {
+                    crate::watchdog::log(&format!("decoder panicked on {path}"));
+                    None
+                })
+                .unwrap_or_else(failed);
+                emit(out);
+            });
         }
-        wave.par_iter().for_each(|(path, kind)| {
-            if cancelled() {
-                return; // a newer folder is waiting: drop the rest
-            }
-            let failed = || ThumbOut {
-                src: path.clone(),
-                thumb: String::new(),
-                w: 0,
-                h: 0,
-                ok: false,
-            };
-            let _watch = crate::watchdog::Watch::start(path);
-            // A decoder that panics on one strange file used to unwind
-            // through the whole wave and end the request: every picture
-            // after it stayed blank. Contain it to that one file.
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                ensure_thumb(cache, Path::new(path), *kind, tsize)
-            }))
-            .unwrap_or_else(|_| {
-                crate::watchdog::log(&format!("decoder panicked on {path}"));
-                None
-            })
-            .unwrap_or_else(failed);
-            emit(out);
-        });
-    }
+    });
 }
 
 #[cfg(test)]
@@ -353,6 +357,31 @@ mod tests {
     }
 
     /// A cancelled batch must stop decoding, not merely stop reporting.
+    /// One picture that takes long to decode must hold one thread, not the
+    /// screen: with waves, nothing past its wave could start until it ended.
+    #[test]
+    fn a_slow_picture_does_not_hold_the_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let n = rayon::current_num_threads().max(2) * 4;
+        let mut items = Vec::new();
+        for i in 0..n {
+            let p = tmp.path().join(format!("s{i:03}.jpg"));
+            make_jpeg(&p, 320, 200);
+            items.push((p.to_string_lossy().to_string(), EntryKind::Image));
+        }
+        let order = std::sync::Mutex::new(Vec::new());
+        batch(&cache, &items, 128, |out| {
+            if out.src == items[0].0 {
+                std::thread::sleep(std::time::Duration::from_millis(1500)); // the slow one
+            }
+            order.lock().unwrap().push(out.src);
+        }, || false);
+        let order = order.lock().unwrap();
+        assert_eq!(order.len(), n);
+        assert_eq!(order.last(), Some(&items[0].0), "the others waited for the slow one");
+    }
+
     #[test]
     fn cancelling_a_batch_stops_the_work() {
         let tmp = tempfile::tempdir().unwrap();

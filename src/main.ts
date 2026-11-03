@@ -307,6 +307,7 @@ let metaMap = new Map<string, Meta>();    // src path -> rating/color/flag/tags
 let takenMap = new Map<string, number>(); // src path -> EXIF capture time (ms)
 let dimsMap = new Map<string, [number, number]>(); // src path -> pixel size
 let currentGen = 0;
+const thumbFailed = new Set<string>(); // no thumbnail possible: not asked again
 let selectedIndex = -1;                   // focused item (keyboard anchor)
 let selected = new Set<number>();         // multi-selection (indexes in visible)
 let selAnchor = -1;                       // shift-click range anchor
@@ -874,12 +875,31 @@ function makeTreeNode(path: string, name: string): HTMLDivElement {
   return wrap;
 }
 
+/** The one name order of the app: the folder tree, the pickers and the
+ *  listing all use it, so a folder sits at the same rank everywhere
+ *  ("_x" and "[x]" before digits, "32" before "00111", case ignored). */
+const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const byName = (a: { name: string }, b: { name: string }) => nameCollator.compare(a.name, b.name);
+
+/** Order of two folders in a recursive listing: segment by segment, so a
+ *  folder's own files come first, then each subfolder in tree order. */
+function dirCmp(a: string, b: string): number {
+  if (a === b) return 0;
+  const pa = a.split(/[\\/]/);
+  const pb = b.split(/[\\/]/);
+  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+    const c = nameCollator.compare(pa[i], pb[i]);
+    if (c) return c;
+  }
+  return pa.length - pb.length;
+}
+
 async function loadChildren(node: TreeNode): Promise<void> {
   if (node.loaded) return;
   node.loaded = true;
   try {
     const list = (await invoke("list_dir", { path: node.path })) as Entry[];
-    const dirs = list.filter((e) => e.kind === "dir" && (settings.showHidden || !e.hidden));
+    const dirs = list.filter((e) => e.kind === "dir" && (settings.showHidden || !e.hidden)).sort(byName);
     if (!dirs.length) node.twist.classList.add("leaf");
     for (const d of dirs) node.childrenEl.appendChild(makeTreeNode(d.path, d.name));
   } catch {
@@ -1026,6 +1046,7 @@ async function openDir(path: string): Promise<boolean> {
   try {
     const list = (await invoke("list_dir", { path })) as Entry[];
     if (seq !== navSeq) return false; // a newer navigation superseded this one
+    thumbFailed.clear(); // reopening a folder gives damaged files another try
     if (!navSuppress && normPath(navHistory[navPos] ?? "") !== normPath(path)) {
       navHistory = navHistory.slice(0, navPos + 1);
       navHistory.push(path);
@@ -1271,9 +1292,18 @@ function refresh(): void {
   });
 
   const dirMul = sortDir === "asc" ? 1 : -1;
+  // A recursive listing sorted by name or type reads like the folder tree:
+  // the folder's own files, then each subfolder in turn. Sorting the file
+  // names across every folder at once shuffled "001.jpg" of thirty albums
+  // together. Other keys (date, size...) stay global, folder as tie-break.
+  const byFolder = filters.recursive && (sortKey === "name" || sortKey === "type");
   visible.sort((a, b) => {
     // Folders always float to the top.
     if ((a.kind === "dir") !== (b.kind === "dir")) return a.kind === "dir" ? -1 : 1;
+    if (byFolder) {
+      const d = dirCmp(parentOf(a.path), parentOf(b.path));
+      if (d) return d * dirMul;
+    }
     if (sortKey === "taken") {
       // Missing EXIF date falls back to the file date, so nothing collapses.
       const ta = takenMap.get(a.path) ?? a.mtime;
@@ -1302,11 +1332,8 @@ function refresh(): void {
         sortKey === "res" ? d[0] * d[1] : d[1] ? d[0] / d[1] : 0;
       return (val(da) - val(db)) * dirMul;
     }
-    if (sortKey === "type") {
-      return (a.ext.localeCompare(b.ext) ||
-        a.name.localeCompare(b.name, undefined, { numeric: true })) * dirMul;
-    }
-    return a.name.localeCompare(b.name, undefined, { numeric: true }) * dirMul;
+    if (sortKey === "type") return (a.ext.localeCompare(b.ext) || byName(a, b)) * dirMul;
+    return (byName(a, b) || (filters.recursive ? dirCmp(parentOf(a.path), parentOf(b.path)) : 0)) * dirMul;
   });
 
   // The DOM cell pool is only valid for a given `visible` array: drop it so
@@ -1391,6 +1418,21 @@ function fmtRatio(w: number, h: number): string {
   return r.toFixed(2).replace(".", ",") + (portrait ? " ↕" : " ↔");
 }
 
+/** Index range actually on screen, whichever view is active. */
+function screenRange(): [number, number] {
+  const viewH = gridWrap.clientHeight || 600;
+  const top = gridWrap.scrollTop;
+  if (settings.view === "grid") {
+    const rowH = gridRowH || 160;
+    const cols = Math.max(1, gridCols);
+    const first = Math.floor(top / rowH) * cols;
+    const last = Math.ceil((top + viewH) / rowH) * cols;
+    return [Math.min(first, visible.length), Math.min(visible.length, last)];
+  }
+  const h = rowH();
+  return [Math.min(Math.floor(top / h), visible.length), Math.min(visible.length, Math.ceil((top + viewH) / h))];
+}
+
 /** Index range currently on screen, whichever view is active, widened by a
  *  couple of screens so scrolling meets thumbnails that are already there. */
 function visibleRange(): [number, number] {
@@ -1414,9 +1456,16 @@ function visibleRange(): [number, number] {
  *  scrolling into the middle had to wait for everything before it. */
 function requestThumbs(): void {
   const [from, to] = visibleRange();
-  const items = visible
-    .slice(from, to)
-    .filter((e) => e.kind !== "dir" && e.kind !== "other" && !thumbs.has(e.path))
+  const [sFrom, sTo] = screenRange();
+  // Priority: what is on screen, then the screens below (nearest first),
+  // then the rows just above. The backend starts them in this order.
+  const order = [
+    ...visible.slice(sFrom, sTo),
+    ...visible.slice(Math.max(sTo, from), to),
+    ...visible.slice(from, Math.min(sFrom, to)).reverse(),
+  ];
+  const items = order
+    .filter((e) => e.kind !== "dir" && e.kind !== "other" && !thumbs.has(e.path) && !thumbFailed.has(e.path))
     .map((e) => ({ path: e.path, kind: e.kind, ext: e.ext }));
   if (!items.length) return;
   void invoke("request_thumbs", { items, tsize: thumbTargetPx() }).then((g) => {
@@ -3652,6 +3701,10 @@ void listen<{ src: string; thumb: string; ok: boolean; generation: number }>("th
   if (ev.payload.ok) {
     thumbs.set(ev.payload.src, ev.payload.thumb);
     scheduleGridPaint();
+  } else {
+    // Asked again at every scroll, an unreadable file went back to the head
+    // of the queue each time and held a worker on ffmpeg, again and again.
+    thumbFailed.add(ev.payload.src);
   }
 });
 
@@ -4847,6 +4900,7 @@ $<HTMLButtonElement>("btn-clear-play").onclick = () => {
 $<HTMLButtonElement>("btn-clear-cache").onclick = () => {
   invoke("clear_cache").then(() => {
     thumbs.clear();
+    thumbFailed.clear();
     previews.clear();
     void refreshCacheStats();
     refresh();
@@ -5195,6 +5249,7 @@ function rotateTargets(delta: number, reset = false): void {
  *  the next asset URL unique so the web view cannot serve a stale copy. */
 function bustAsset(path: string): void {
   thumbs.delete(path);
+  thumbFailed.delete(path);
   hdCache.delete(path);
   hdUrls.delete(path);
   assetBust.set(path, (assetBust.get(path) ?? 0) + 1);
@@ -5392,7 +5447,7 @@ function makePickerNode(path: string, name: string): HTMLDivElement {
     if (!loaded) {
       loaded = true;
       const list = (await invoke("list_dir", { path }).catch(() => [])) as Entry[];
-      for (const d of list.filter((x) => x.kind === "dir" && (settings.showHidden || !x.hidden))) {
+      for (const d of list.filter((x) => x.kind === "dir" && (settings.showHidden || !x.hidden)).sort(byName)) {
         kids.appendChild(makePickerNode(d.path, d.name));
       }
     }
