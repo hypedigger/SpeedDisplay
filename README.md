@@ -13,7 +13,7 @@
 - **RAW**: near-instant display via the embedded JPEG preview (CR2, CR3, NEF, ARW, RW2, RAF, ORF, DNG…)
 - **Videos**: thumbnails, animated hover previews (live or pre-generated), direct playback, lossless MKV→MP4 remux, NVENC transcode as a last resort
 - **Viewer**: windowed or true fullscreen, wheel zoom anchored on the cursor, hold the right button for a 100 % loupe you can drag and zoom, neighbor preloading
-- **Two-page view**, like a PDF reader: pictures side by side, optionally with the first one alone as a cover page
+- **Two-page view**, like a PDF reader: pictures side by side, optionally with the first one alone as a cover page; remembered per folder (subfolders keep their own setting)
 - **Video player**: resumes where you stopped, compact floating transport bar in fullscreen, wheel over the bar to seek
 - **Mouse Back/Forward buttons** step through the display modes (thumbnails, window, fullscreen)
 - **Safe file operations**: copy, cut, paste, drag and drop, merge of same-name folders, overwrites go to the **Recycle Bin**, a move never deletes its source before the copy is verified, conflict dialog with a side-by-side comparison

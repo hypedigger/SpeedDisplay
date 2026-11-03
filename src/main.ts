@@ -63,9 +63,11 @@ interface Settings {
   cacheLimitGb: number;
   /** Wipe the converted videos and full previews when the app closes. */
   clearPlayOnExit: boolean;
-  /** Viewer layout: one picture, two side by side, or two with the first
-   *  one alone as a cover page (like a PDF reader). */
-  spread: "single" | "double" | "cover";
+  /** Viewer layout per folder: two side by side, or two with the first one
+   *  alone as a cover page (like a PDF reader). Keyed by the folder's
+   *  normalised path; a folder absent from the map shows one picture. Only
+   *  that exact folder - its subfolders start again from one picture. */
+  spreadByDir: Record<string, "double" | "cover">;
   /** Size of the Options window, 0 = default. Kept across sessions. */
   optW: number;
   optH: number;
@@ -223,7 +225,7 @@ const DEFAULTS: Settings = {
   clearPlayOnExit: false,
   optW: 0,
   optH: 0,
-  spread: "single",
+  spreadByDir: {},
   scrollbarPct: 200,
   keepZoom: false,
   loopNav: true,
@@ -536,6 +538,8 @@ async function loadSettings(): Promise<void> {
   settings.addedCombos = [...new Set([...(saved.addedCombos ?? []), "Shift+Insert"])];
   settings.vtShow = { ...DEFAULTS.vtShow, ...(saved.vtShow ?? {}) };
   settings.columns = { ...DEFAULTS.columns, ...(saved.columns ?? {}) };
+  settings.spreadByDir = { ...(saved.spreadByDir ?? {}) };
+  delete (settings as unknown as Record<string, unknown>).spread; // the old global value
   applySettings();
 }
 function saveSettings(): void {
@@ -1042,6 +1046,7 @@ async function openDir(path: string): Promise<boolean> {
     void loadMeta(path);
     buildBreadcrumb();
     updateFavButton();
+    syncSpreadSeg(); // each folder has its own layout
     refresh();
     void revealInTree(path);
     if (settings.autoRefresh) void invoke("watch_dir", { path }).catch(() => {});
@@ -2690,12 +2695,19 @@ const viewerImg2 = $<HTMLImageElement>("viewer-img2");
  *  being -1 when the page stands alone. Only still pictures pair up; a video
  *  always gets the screen to itself. With a cover page the first item of the
  *  folder is alone, then (1,2), (3,4)... - the way a PDF reader shows a book. */
+type SpreadMode = "single" | "double" | "cover";
+/** The layout chosen for the folder currently open. */
+function currentSpread(): SpreadMode {
+  return settings.spreadByDir[normPath(currentPath)] ?? "single";
+}
+
 function spreadPair(i: number): [number, number] {
   const media = mediaList();
-  if (settings.spread === "single" || !media[i]) return [i, -1];
+  const mode = currentSpread();
+  if (mode === "single" || !media[i]) return [i, -1];
   const still = (k: number) => media[k]?.kind === "image" || media[k]?.kind === "raw";
   let first: number;
-  if (settings.spread === "cover") {
+  if (mode === "cover") {
     if (i === 0) return [0, -1];
     first = i - ((i - 1) % 2);
   } else {
@@ -2712,12 +2724,17 @@ function inSpread(): boolean {
 
 function syncSpreadSeg(): void {
   document.querySelectorAll<HTMLButtonElement>("#spread-seg .spread-btn").forEach((b) =>
-    b.classList.toggle("active", b.dataset.spread === settings.spread),
+    b.classList.toggle("active", b.dataset.spread === currentSpread()),
   );
 }
 document.querySelectorAll<HTMLButtonElement>("#spread-seg .spread-btn").forEach((b) => {
   b.onclick = () => {
-    settings.spread = b.dataset.spread as Settings["spread"];
+    // Remembered for this folder only. One picture is the default, so it is
+    // stored as the absence of an entry: the map holds only the exceptions.
+    const key = normPath(currentPath);
+    const mode = b.dataset.spread as SpreadMode;
+    if (mode === "single") delete settings.spreadByDir[key];
+    else settings.spreadByDir[key] = mode;
     saveSettings();
     syncSpreadSeg();
     // Re-lay the open viewer on the spot.
