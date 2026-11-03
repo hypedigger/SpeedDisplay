@@ -219,5 +219,13 @@
   "spreadTip": "Viewer layout",
   "spreadSingle": "One picture at a time",
   "spreadDouble": "Two pictures side by side",
-  "spreadCover": "Two pictures side by side, the first one alone (cover page)"
+  "spreadCover": "Two pictures side by side, the first one alone (cover page)",
+  "purgeReading": "Reading the cache…",
+  "purgeChecking": "Checking the original files…",
+  "purgeDeleting": "Deleting cache files…",
+  "purgeForgetting": "Updating the database…",
+  "purgeFinished": "Clean-up finished",
+  "purgeNothing": "Nothing to clean: every file is there",
+  "purgeFailed": "The clean-up failed",
+  "purgeOriginals": "vanished files"
 }

@@ -28,6 +28,10 @@ impl ThumbCache {
         std::fs::create_dir_all(dir.join("previews")).ok();
         std::fs::create_dir_all(dir.join("play")).ok();
         let conn = Connection::open(dir.join("index.db"))?;
+        // Another instance or a WAL checkpoint may hold the database for a
+        // moment: wait for it rather than fail - most writes here ignore
+        // their result, so a failure would simply vanish.
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
@@ -251,73 +255,117 @@ impl ThumbCache {
         }
     }
 
-    /// Drop what belongs to originals that no longer exist: thumbnails,
-    /// ffmpeg products, ratings and playback positions. A file on a drive that
-    /// is not connected counts as gone too - that is the user's choice.
-    pub fn purge_orphans(&self) -> PurgeReport {
+    /// Drop what belongs to originals that cannot be found: thumbnails,
+    /// ffmpeg products, ratings and playback positions.
+    ///
+    /// Built to be watched and to fail loudly:
+    ///  * the database lock is held only to read the rows and, at the end, to
+    ///    delete them in ONE transaction - never during the file work, which
+    ///    used to stall every other cache access for the whole run;
+    ///  * a database error is returned, not turned into an empty list (which
+    ///    reported "0 files" as if there had been nothing to do);
+    ///  * `progress` hears about every phase.
+    pub fn purge_orphans(
+        &self,
+        progress: &(dyn Fn(PurgeProgress) + Sync),
+    ) -> Result<PurgeReport, String> {
+        use rayon::prelude::*;
         let mut rep = PurgeReport::default();
-        let gone = |path: &str, _rep: &mut PurgeReport| -> bool { !Path::new(path).exists() };
+        let tell = |phase: &'static str, done: u64, total: u64, rep: &PurgeReport| {
+            progress(PurgeProgress { phase, done, total, files: rep.files, bytes: rep.bytes, records: rep.records })
+        };
 
-        let Ok(conn) = self.conn.lock() else { return rep };
+        // 1. Read what the cache knows - briefly under the lock.
+        tell("read", 0, 0, &rep);
+        let (thumb_rows, file_rows, meta_paths) = {
+            let conn = self.conn.lock().map_err(|_| "cache database unavailable".to_string())?;
+            let pairs = |sql: &str| -> Result<Vec<(String, String)>, String> {
+                let mut st = conn.prepare(sql).map_err(|e| e.to_string())?;
+                let rows = st
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+            };
+            let thumbs = pairs("SELECT path, thumb FROM thumbs")?;
+            let files = pairs("SELECT file, source FROM files")?;
+            let mut st = conn.prepare("SELECT path FROM meta").map_err(|e| e.to_string())?;
+            let meta = st
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            (thumbs, files, meta)
+        };
 
-        // 1. Thumbnails, by their original.
-        let thumb_rows: Vec<(String, String)> = conn
-            .prepare("SELECT path, thumb FROM thumbs")
-            .and_then(|mut st| {
-                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-                    .map(|rows| rows.flatten().collect())
-            })
-            .unwrap_or_default();
-        let mut dead_sources = std::collections::HashSet::new();
-        let mut checked = std::collections::HashMap::new();
-        for (src, thumb) in &thumb_rows {
-            let is_gone = *checked.entry(src.clone()).or_insert_with(|| gone(src, &mut rep));
-            if is_gone {
-                rep.bytes += std::fs::metadata(thumb).map(|m| m.len()).unwrap_or(0);
-                if std::fs::remove_file(thumb).is_ok() {
-                    rep.files += 1;
+        // 2. Which originals are gone - checked in parallel, lock-free.
+        let mut originals: Vec<&str> = thumb_rows
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .chain(file_rows.iter().map(|(_, s)| s.as_str()))
+            .chain(meta_paths.iter().map(|p| p.as_str()))
+            .collect();
+        originals.sort_unstable();
+        originals.dedup();
+        let total = originals.len() as u64;
+        let checked = std::sync::atomic::AtomicU64::new(0);
+        let gone: std::collections::HashSet<&str> = originals
+            .par_iter()
+            .filter(|p| {
+                let n = checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if n % 2000 == 0 {
+                    tell("check", n, total, &PurgeReport::default());
                 }
-                dead_sources.insert(src.clone());
-            }
-        }
-        for src in &dead_sources {
-            let _ = conn.execute("DELETE FROM thumbs WHERE path=?1", params![src]);
-        }
-
-        // 2. ffmpeg products whose original is known.
-        let file_rows: Vec<(String, String)> = conn
-            .prepare("SELECT file, source FROM files")
-            .and_then(|mut st| {
-                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-                    .map(|rows| rows.flatten().collect())
+                !Path::new(p).exists()
             })
-            .unwrap_or_default();
-        for (file, src) in &file_rows {
-            let is_gone = *checked.entry(src.clone()).or_insert_with(|| gone(src, &mut rep));
-            if is_gone || !Path::new(file).exists() {
-                if is_gone {
-                    rep.bytes += std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
-                    if std::fs::remove_file(file).is_ok() {
-                        rep.files += 1;
-                    }
-                }
-                let _ = conn.execute("DELETE FROM files WHERE file=?1", params![file]);
-            }
-        }
+            .copied()
+            .collect();
+        tell("check", total, total, &rep);
 
-        // 3. Ratings, labels, keywords and positions of deleted originals.
-        let meta_paths: Vec<String> = conn
-            .prepare("SELECT path FROM meta")
-            .and_then(|mut st| st.query_map([], |r| r.get(0)).map(|rows| rows.flatten().collect()))
-            .unwrap_or_default();
-        for path in &meta_paths {
-            let is_gone = *checked.entry(path.clone()).or_insert_with(|| gone(path, &mut rep));
-            if is_gone {
-                let _ = conn.execute("DELETE FROM meta WHERE path=?1", params![path]);
-                rep.records += 1;
+        // 3. Delete their cache files, still without the lock.
+        let doomed: Vec<&str> = thumb_rows
+            .iter()
+            .filter(|(p, _)| gone.contains(p.as_str()))
+            .map(|(_, t)| t.as_str())
+            .chain(
+                file_rows
+                    .iter()
+                    .filter(|(_, s)| gone.contains(s.as_str()))
+                    .map(|(f, _)| f.as_str()),
+            )
+            .collect();
+        let n_doomed = doomed.len() as u64;
+        for (i, f) in doomed.iter().enumerate() {
+            let len = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
+            if std::fs::remove_file(f).is_ok() {
+                rep.files += 1;
+                rep.bytes += len;
+            }
+            if i % 500 == 0 {
+                tell("files", i as u64, n_doomed, &rep);
             }
         }
-        rep
+        tell("files", n_doomed, n_doomed, &rep);
+
+        // 4. Forget them, in one transaction.
+        tell("records", 0, gone.len() as u64, &rep);
+        {
+            let mut conn = self.conn.lock().map_err(|_| "cache database unavailable".to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            {
+                let mut del_thumb = tx.prepare("DELETE FROM thumbs WHERE path=?1").map_err(|e| e.to_string())?;
+                let mut del_file = tx.prepare("DELETE FROM files WHERE source=?1").map_err(|e| e.to_string())?;
+                let mut del_meta = tx.prepare("DELETE FROM meta WHERE path=?1").map_err(|e| e.to_string())?;
+                for p in &gone {
+                    del_thumb.execute(params![p]).map_err(|e| e.to_string())?;
+                    del_file.execute(params![p]).map_err(|e| e.to_string())?;
+                    rep.records += del_meta.execute(params![p]).map_err(|e| e.to_string())? as u64;
+                }
+            }
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        rep.originals = gone.len() as u64;
+        tell("done", total, total, &rep);
+        Ok(rep)
     }
 
     /// Wipe the whole cache (records + files). Returns freed byte count.
@@ -411,10 +459,24 @@ impl ThumbCache {
 /// What a purge removed.
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct PurgeReport {
+    /// Originals found missing.
+    pub originals: u64,
     /// Cache files deleted and the space they took.
     pub files: u64,
     pub bytes: u64,
     /// Metadata rows (ratings, positions...) of originals that are gone.
+    pub records: u64,
+}
+
+/// One step of a running purge, for a live display.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PurgeProgress {
+    /// "read", "check", "files", "records" or "done".
+    pub phase: &'static str,
+    pub done: u64,
+    pub total: u64,
+    pub files: u64,
+    pub bytes: u64,
     pub records: u64,
 }
 
@@ -538,14 +600,68 @@ mod tests {
         // A drive that is not plugged in: unreachable means gone.
         c.set_meta("Q:\\NotPluggedIn\\holiday.jpg", "Q:\\NotPluggedIn", Some(4), None, None, None, None);
 
-        let rep = c.purge_orphans();
+        let rep = c.purge_orphans(&|_| {}).unwrap();
 
         assert_eq!(rep.files, 1, "the deleted original's thumbnail goes");
         assert_eq!(rep.records, 2, "its rating goes, and so does the unplugged one");
+        assert_eq!(rep.originals, 2, "two originals were missing");
         assert!(c.dir.join("thumbs").join("a.jpg").exists(), "the live file is kept");
         assert!(!c.dir.join("thumbs").join("d.jpg").exists());
         assert!(c.dir_meta("Q:\\NotPluggedIn").is_empty());
         assert_eq!(c.dir_meta(&parent).len(), 1, "the live file keeps its rating");
+    }
+
+    /// The purge at the size of a real cache: 50 000 thumbnails, 40 000 of
+    /// them orphaned. Run: cargo test --release --lib purge_at_scale -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn purge_at_scale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let originals = tmp.path().join("originals");
+        std::fs::create_dir_all(&originals).unwrap();
+        let parent = originals.to_string_lossy().to_string();
+        let t = std::time::Instant::now();
+        {
+            let mut conn = c.conn.lock().unwrap();
+            let tx = conn.transaction().unwrap();
+            for i in 0..50_000u32 {
+                let src = originals.join(format!("p{i}.jpg"));
+                if i % 5 == 0 {
+                    std::fs::write(&src, b"x").unwrap(); // 1 in 5 still exists
+                }
+                let thumb = c.dir.join("thumbs").join(format!("t{i}.jpg"));
+                std::fs::write(&thumb, b"thumbnail-bytes").unwrap();
+                tx.execute(
+                    "INSERT INTO thumbs (path, mtime, size, tsize, thumb, w, h) VALUES (?1,1,1,256,?2,10,10)",
+                    params![src.to_string_lossy(), thumb.to_string_lossy()],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        c.set_meta(&originals.join("p1.jpg").to_string_lossy(), &parent, Some(3), None, None, None, None);
+        println!("fixture built in {:?}", t.elapsed());
+
+        let phases = std::sync::Mutex::new(Vec::<&'static str>::new());
+        let t = std::time::Instant::now();
+        let rep = c
+            .purge_orphans(&|p| {
+                let mut v = phases.lock().unwrap();
+                if v.last() != Some(&p.phase) {
+                    v.push(p.phase);
+                }
+            })
+            .unwrap();
+        let took = t.elapsed();
+        println!("purge took {:?}: {:?}", took, rep);
+        println!("phases seen: {:?}", phases.lock().unwrap());
+        assert_eq!(rep.originals, 40_000);
+        assert_eq!(rep.files, 40_000);
+        assert_eq!(rep.records, 1, "the rating of a vanished file goes too");
+        let left: i64 = c.conn.lock().unwrap().query_row("SELECT count(*) FROM thumbs", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 10_000, "only the live originals keep their thumbnail");
+        assert_eq!(*phases.lock().unwrap(), vec!["read", "check", "files", "records", "done"]);
     }
 
     #[test]

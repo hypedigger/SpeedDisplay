@@ -219,5 +219,13 @@
   "spreadTip": "Disposição do visualizador",
   "spreadSingle": "Uma imagem por vez",
   "spreadDouble": "Duas imagens lado a lado",
-  "spreadCover": "Duas imagens lado a lado, a primeira sozinha (capa)"
+  "spreadCover": "Duas imagens lado a lado, a primeira sozinha (capa)",
+  "purgeReading": "Lendo o cache…",
+  "purgeChecking": "Verificando os arquivos originais…",
+  "purgeDeleting": "Excluindo arquivos do cache…",
+  "purgeForgetting": "Atualizando o banco de dados…",
+  "purgeFinished": "Limpeza concluída",
+  "purgeNothing": "Nada a limpar: todos os arquivos estão presentes",
+  "purgeFailed": "A limpeza falhou",
+  "purgeOriginals": "arquivos desaparecidos"
 }

@@ -4770,20 +4770,66 @@ bindCheck("set-clear-play-exit", () => settings.clearPlayOnExit, (v) => {
   settings.clearPlayOnExit = v;
   void invoke("set_clear_play_on_exit", { on: v }).catch(() => {});
 });
+// ----- Cache purge, shown live -----
+interface PurgeProgress {
+  phase: "read" | "check" | "files" | "records" | "done";
+  done: number;
+  total: number;
+  files: number;
+  bytes: number;
+  records: number;
+}
+const nf = (n: number) => n.toLocaleString();
+function purgeShow(state: "running" | "done" | "failed", phase: string, pct: number, detail: string): void {
+  const box = $("purge-box");
+  box.hidden = false;
+  box.classList.toggle("done", state === "done");
+  box.classList.toggle("failed", state === "failed");
+  $("purge-phase").textContent = phase;
+  $("purge-fill").style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  $("purge-detail").textContent = detail;
+}
+void listen<PurgeProgress>("purge-progress", (ev) => {
+  const p = ev.payload;
+  const pct = p.total ? (p.done / p.total) * 100 : 0;
+  switch (p.phase) {
+    case "read":
+      purgeShow("running", t("purgeReading"), 2, "");
+      break;
+    case "check":
+      purgeShow("running", t("purgeChecking"), pct, `${nf(p.done)} / ${nf(p.total)}`);
+      break;
+    case "files":
+      purgeShow(
+        "running",
+        t("purgeDeleting"),
+        pct,
+        `${nf(p.files)} / ${nf(p.total)} ${t("filesSuffix")} - ${fmtSize(p.bytes)}`,
+      );
+      break;
+    case "records":
+      purgeShow("running", t("purgeForgetting"), 100, `${nf(p.files)} ${t("filesSuffix")} - ${fmtSize(p.bytes)}`);
+      break;
+  }
+});
+
 $<HTMLButtonElement>("btn-purge").onclick = () => {
   const btn = $<HTMLButtonElement>("btn-purge");
   btn.disabled = true;
+  // Visible at once: the click registered, whatever the backend does next.
+  purgeShow("running", t("purgeReading"), 2, "");
   void invoke("purge_orphans")
     .then((r) => {
-      const rep = r as { files: number; bytes: number; records: number };
-      const parts = [
-        `${rep.files} ${t("filesSuffix")} (${fmtSize(rep.bytes)})`,
-        `${rep.records} ${t("purgeRecords")}`,
-      ];
-      toast(`${t("purgeDone")} ${parts.join(", ")}`);
+      const rep = r as { originals: number; files: number; bytes: number; records: number };
+      purgeShow(
+        "done",
+        rep.originals ? t("purgeFinished") : t("purgeNothing"),
+        100,
+        `${nf(rep.originals)} ${t("purgeOriginals")} - ${nf(rep.files)} ${t("filesSuffix")} (${fmtSize(rep.bytes)}) - ${nf(rep.records)} ${t("purgeRecords")}`,
+      );
       void refreshCacheStats();
     })
-    .catch((err) => toast(String(err)))
+    .catch((err) => purgeShow("failed", t("purgeFailed"), 100, String(err)))
     .finally(() => (btn.disabled = false));
 };
 $<HTMLButtonElement>("btn-clear-play").onclick = () => {

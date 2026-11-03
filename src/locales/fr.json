@@ -219,5 +219,13 @@
   "spreadTip": "Disposition de la visionneuse",
   "spreadSingle": "Une image à la fois",
   "spreadDouble": "Deux images côte à côte",
-  "spreadCover": "Deux images côte à côte, la première seule (page de garde)"
+  "spreadCover": "Deux images côte à côte, la première seule (page de garde)",
+  "purgeReading": "Lecture du cache…",
+  "purgeChecking": "Vérification des fichiers d'origine…",
+  "purgeDeleting": "Suppression des fichiers du cache…",
+  "purgeForgetting": "Mise à jour de la base…",
+  "purgeFinished": "Nettoyage terminé",
+  "purgeNothing": "Rien à nettoyer : tous les fichiers sont présents",
+  "purgeFailed": "Le nettoyage a échoué",
+  "purgeOriginals": "fichiers disparus"
 }

@@ -1705,3 +1705,24 @@ tr.drop-target td {
   flex: none;
 }
 #viewer-rot.spread #viewer-img2 { box-shadow: -1px 0 0 rgba(0, 0, 0, 0.55); }
+
+/* ---------- Cache purge: live progress ---------- */
+#purge-box {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+}
+#purge-box[hidden] { display: none; }
+#purge-phase { font-weight: 600; }
+#purge-bar { height: 7px; border-radius: 4px; background: var(--bg3); overflow: hidden; }
+#purge-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.12s linear; }
+#purge-detail { color: var(--fg-dim); font-size: 0.9em; font-variant-numeric: tabular-nums; }
+/* The final line stays on screen: a result, not a passing notice. */
+#purge-box.done { border-color: rgba(88, 194, 106, 0.55); }
+#purge-box.done #purge-phase { color: #58c26a; }
+#purge-box.failed { border-color: rgba(224, 85, 85, 0.6); }
+#purge-box.failed #purge-phase { color: #e05555; }

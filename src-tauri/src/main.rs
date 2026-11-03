@@ -864,12 +864,32 @@ async fn rotate_exif(
 /// Remove from the cache what belongs to originals that no longer exist.
 #[tauri::command]
 async fn purge_orphans(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<lumen_core::cache::PurgeReport, String> {
     let cache = state.cache.clone();
-    tauri::async_runtime::spawn_blocking(move || Ok(cache.purge_orphans()))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        lumen_core::watchdog::log("purge: started");
+        let last = std::sync::Mutex::new(std::time::Instant::now());
+        let result = cache.purge_orphans(&|p| {
+            // Phase changes always go through; within a phase, ten a second.
+            let mut l = last.lock().unwrap();
+            if p.phase == "done" || p.done == 0 || l.elapsed() >= std::time::Duration::from_millis(100) {
+                *l = std::time::Instant::now();
+                let _ = app.emit("purge-progress", &p);
+            }
+        });
+        match &result {
+            Ok(r) => lumen_core::watchdog::log(&format!(
+                "purge: done - {} originals missing, {} files ({} bytes), {} records",
+                r.originals, r.files, r.bytes, r.records
+            )),
+            Err(e) => lumen_core::watchdog::log(&format!("purge: FAILED - {e}")),
+        }
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Delete everything in the `play` folder: the converted videos and the

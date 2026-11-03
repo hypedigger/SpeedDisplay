@@ -219,5 +219,13 @@
   "spreadTip": "Disposición del visor",
   "spreadSingle": "Una imagen a la vez",
   "spreadDouble": "Dos imágenes lado a lado",
-  "spreadCover": "Dos imágenes lado a lado, la primera sola (portada)"
+  "spreadCover": "Dos imágenes lado a lado, la primera sola (portada)",
+  "purgeReading": "Leyendo la caché…",
+  "purgeChecking": "Comprobando los archivos originales…",
+  "purgeDeleting": "Eliminando archivos de la caché…",
+  "purgeForgetting": "Actualizando la base de datos…",
+  "purgeFinished": "Limpieza terminada",
+  "purgeNothing": "Nada que limpiar: todos los archivos están",
+  "purgeFailed": "La limpieza ha fallado",
+  "purgeOriginals": "archivos desaparecidos"
 }
