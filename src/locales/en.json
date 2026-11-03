@@ -227,5 +227,8 @@
   "purgeFinished": "Clean-up finished",
   "purgeNothing": "Nothing to clean: every file is there",
   "purgeFailed": "The clean-up failed",
-  "purgeOriginals": "vanished files"
+  "purgeOriginals": "vanished files",
+  "purgeStrays": "Thumbnails unknown to the database…",
+  "purgeStrayRemoved": "orphan thumbnails deleted",
+  "purgeReattached": "re-attached to their file"
 }

@@ -227,5 +227,8 @@
   "purgeFinished": "Limpieza terminada",
   "purgeNothing": "Nada que limpiar: todos los archivos están",
   "purgeFailed": "La limpieza ha fallado",
-  "purgeOriginals": "archivos desaparecidos"
+  "purgeOriginals": "archivos desaparecidos",
+  "purgeStrays": "Miniaturas desconocidas para la base…",
+  "purgeStrayRemoved": "miniaturas huérfanas eliminadas",
+  "purgeReattached": "reasociadas a su archivo"
 }

@@ -148,6 +148,18 @@ impl ThumbCache {
         h: u32,
     ) {
         if let Ok(conn) = self.conn.lock() {
+            // The original changed: its new thumbnail gets a new name, and the
+            // old file used to stay behind, unreachable, forever. That is how a
+            // cache ends up with 280 000 files its database knows nothing about.
+            if let Ok(old) = conn.query_row(
+                "SELECT thumb FROM thumbs WHERE path=?1 AND tsize=?2",
+                params![path, tsize],
+                |r| r.get::<_, String>(0),
+            ) {
+                if old != thumb {
+                    let _ = std::fs::remove_file(&old);
+                }
+            }
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO thumbs (path, mtime, size, tsize, thumb, w, h)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -297,6 +309,30 @@ impl ThumbCache {
             (thumbs, files, meta)
         };
 
+        // Where to look for re-attachable strays later, and at which sizes:
+        // decided NOW, before rows are deleted. A folder can outlive the files
+        // the database knew in it (photos sorted out of it, new ones in), and
+        // dropping it from the search would delete thumbnails that belong to
+        // files sitting right there.
+        let mut search_dirs: std::collections::HashSet<PathBuf> = thumb_rows
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .chain(file_rows.iter().map(|(_, s)| s.as_str()))
+            .chain(meta_paths.iter().map(|p| p.as_str()))
+            .filter_map(|p| Path::new(p).parent().map(Path::to_path_buf))
+            .collect();
+        search_dirs.retain(|d| d.is_dir());
+        let search_sizes: Vec<u32> = {
+            let conn = self.conn.lock().map_err(|_| "cache database unavailable".to_string())?;
+            let mut st = conn.prepare("SELECT DISTINCT tsize FROM thumbs").map_err(|e| e.to_string())?;
+            let v = st
+                .query_map([], |r| r.get::<_, u32>(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            v
+        };
+
         // 2. Which originals are gone - checked in parallel, lock-free.
         let mut originals: Vec<&str> = thumb_rows
             .iter()
@@ -364,8 +400,143 @@ impl ThumbCache {
             tx.commit().map_err(|e| e.to_string())?;
         }
         rep.originals = gone.len() as u64;
+
+        // 5. Thumbnail files the database does not know.
+        self.reclaim_strays(&search_dirs, &search_sizes, &mut rep, &|done, total, rep| {
+            tell("strays", done, total, rep)
+        })?;
+
         tell("done", total, total, &rep);
         Ok(rep)
+    }
+
+    /// Thumbnail files no row points to. Each one is either re-attached to
+    /// its original - when that original sits, unchanged, in a folder the
+    /// cache knows - or deleted. Finding the others would mean scanning every
+    /// drive for files whose thumbnail is most likely stale anyway.
+    fn reclaim_strays(
+        &self,
+        folders: &std::collections::HashSet<PathBuf>,
+        tsizes: &[u32],
+        rep: &mut PurgeReport,
+        tell: &dyn Fn(u64, u64, &PurgeReport),
+    ) -> Result<(), String> {
+        let lower = |s: &str| s.to_lowercase();
+        // What the database points to now.
+        let referenced = {
+            let conn = self.conn.lock().map_err(|_| "cache database unavailable".to_string())?;
+            let col = |sql: &str| -> Result<Vec<String>, String> {
+                let mut st = conn.prepare(sql).map_err(|e| e.to_string())?;
+                let rows = st.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+            };
+            let mut referenced = std::collections::HashSet::new();
+            for f in col("SELECT thumb FROM thumbs")?.into_iter().chain(col("SELECT file FROM files")?) {
+                if let Some(n) = Path::new(&f).file_name() {
+                    referenced.insert(lower(&n.to_string_lossy()));
+                }
+            }
+            referenced
+        };
+
+        // Only our own files: 16 hex digits + .jpg/.png, and not brand new (a
+        // thumbnail being written right now has no row YET).
+        let fresh = std::time::SystemTime::now() - std::time::Duration::from_secs(300);
+        let ours = |name: &str| {
+            let (stem, ext) = name.rsplit_once('.').unwrap_or(("", ""));
+            stem.len() == 16
+                && stem.chars().all(|c| c.is_ascii_hexdigit())
+                && (ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("png"))
+        };
+        let mut strays: std::collections::HashMap<String, PathBuf> = Default::default();
+        if let Ok(rd) = std::fs::read_dir(self.dir.join("thumbs")) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                let key = lower(&name);
+                if !ours(&name) || referenced.contains(&key) {
+                    continue;
+                }
+                let recent = e.metadata().and_then(|m| m.modified()).map(|t| t > fresh).unwrap_or(true);
+                if !recent {
+                    strays.insert(key, e.path());
+                }
+            }
+        }
+        let n_strays = strays.len() as u64;
+        tell(0, n_strays, rep);
+
+        // Recompute the names the originals in known folders would produce.
+        let mut native_rows = Vec::new(); // (src, mtime, size, tsize, thumb)
+        let mut ffmpeg_rows = Vec::new(); // (file, src)
+        for dir in folders {
+            let Ok(rd) = std::fs::read_dir(dir) else { continue };
+            for e in rd.flatten() {
+                let Ok(m) = e.metadata() else { continue };
+                if !m.is_file() {
+                    continue;
+                }
+                let src = e.path();
+                let src_str = src.to_string_lossy().to_string();
+                let mtime = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                let size = m.len();
+                for &ts in tsizes {
+                    let native = format!("{:016x}", crate::fnv1a64(format!("{src_str}|{mtime}|{size}|{ts}").as_bytes()));
+                    for ext in ["jpg", "png"] {
+                        if let Some(f) = strays.remove(&format!("{native}.{ext}")) {
+                            native_rows.push((src_str.clone(), mtime as i64, size, ts, f));
+                        }
+                    }
+                    for tag in [format!("vt{ts}"), format!("it{ts}")] {
+                        let k = format!("{:016x}", crate::fnv1a64(format!("{}|{}|{}|{}", src.display(), mtime, size, tag).as_bytes()));
+                        if let Some(f) = strays.remove(&format!("{k}.jpg")) {
+                            ffmpeg_rows.push((f, src_str.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Re-attach, in one transaction.
+        {
+            let mut conn = self.conn.lock().map_err(|_| "cache database unavailable".to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            for (src, mtime, size, ts, f) in &native_rows {
+                let (w, h) = image::image_dimensions(f).unwrap_or((0, 0));
+                tx.execute(
+                    "INSERT OR REPLACE INTO thumbs (path, mtime, size, tsize, thumb, w, h) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    params![src, mtime, *size as i64, ts, f.to_string_lossy(), w, h],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            for (f, src) in &ffmpeg_rows {
+                tx.execute(
+                    "INSERT OR REPLACE INTO files (file, source) VALUES (?1, ?2)",
+                    params![f.to_string_lossy(), src],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+        rep.reattached = (native_rows.len() + ffmpeg_rows.len()) as u64;
+
+        // The rest has no known original: delete it.
+        for (i, f) in strays.values().enumerate() {
+            let len = std::fs::metadata(f).map(|m| m.len()).unwrap_or(0);
+            if std::fs::remove_file(f).is_ok() {
+                rep.strays += 1;
+                rep.stray_bytes += len;
+            }
+            if i % 1000 == 0 {
+                tell(rep.reattached + i as u64, n_strays, rep);
+            }
+        }
+        tell(n_strays, n_strays, rep);
+        Ok(())
     }
 
     /// Wipe the whole cache (records + files). Returns freed byte count.
@@ -466,12 +637,17 @@ pub struct PurgeReport {
     pub bytes: u64,
     /// Metadata rows (ratings, positions...) of originals that are gone.
     pub records: u64,
+    /// Thumbnail files no row pointed to: put back in the database, or
+    /// deleted (with the space that freed).
+    pub reattached: u64,
+    pub strays: u64,
+    pub stray_bytes: u64,
 }
 
 /// One step of a running purge, for a live display.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PurgeProgress {
-    /// "read", "check", "files", "records" or "done".
+    /// "read", "check", "files", "records", "strays" or "done".
     pub phase: &'static str,
     pub done: u64,
     pub total: u64,
@@ -661,7 +837,114 @@ mod tests {
         assert_eq!(rep.records, 1, "the rating of a vanished file goes too");
         let left: i64 = c.conn.lock().unwrap().query_row("SELECT count(*) FROM thumbs", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 10_000, "only the live originals keep their thumbnail");
-        assert_eq!(*phases.lock().unwrap(), vec!["read", "check", "files", "records", "done"]);
+        assert_eq!(*phases.lock().unwrap(), vec!["read", "check", "files", "records", "strays", "done"]);
+    }
+
+    /// A thumbnail file the database forgot is put back when its original is
+    /// still there unchanged, and deleted when nothing can claim it. A file
+    /// that is not one of ours is never touched.
+    #[test]
+    fn strays_are_reattached_or_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let folder = tmp.path().join("photos");
+        std::fs::create_dir_all(&folder).unwrap();
+
+        // A known file, so the folder is known.
+        let known = folder.join("known.jpg");
+        std::fs::write(&known, b"k").unwrap();
+        let kthumb = c.dir.join("thumbs").join("00000000000000aa.jpg");
+        std::fs::write(&kthumb, b"k").unwrap();
+        c.put(&known.to_string_lossy(), 1, 1, 330, &kthumb.to_string_lossy(), 1, 1);
+
+        // An original whose row was lost: its thumbnail is recomputable.
+        let lost = folder.join("lost.jpg");
+        std::fs::write(&lost, b"lost-original").unwrap();
+        let m = std::fs::metadata(&lost).unwrap();
+        let mtime = m.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+        let name = format!(
+            "{:016x}.jpg",
+            crate::fnv1a64(format!("{}|{}|{}|{}", lost.to_string_lossy(), mtime, m.len(), 330).as_bytes())
+        );
+        let rescued = c.dir.join("thumbs").join(&name);
+        image::RgbImage::new(4, 3).save(&rescued).unwrap();
+
+        // A stale thumbnail nobody can claim, and a foreign file.
+        let stale = c.dir.join("thumbs").join("0123456789abcdef.jpg");
+        std::fs::write(&stale, b"old").unwrap();
+        let foreign = c.dir.join("thumbs").join("notes.txt");
+        std::fs::write(&foreign, b"keep me").unwrap();
+        // Age them past the "being written right now" window.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for f in [&rescued, &stale] {
+            std::fs::File::options().write(true).open(f).unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(old)).unwrap();
+        }
+
+        let rep = c.purge_orphans(&|_| {}).unwrap();
+
+        assert_eq!(rep.reattached, 1, "the lost row is rebuilt");
+        assert!(rescued.exists(), "and its thumbnail kept");
+        let row: (u32, u32) = c.conn.lock().unwrap()
+            .query_row("SELECT w, h FROM thumbs WHERE thumb=?1", params![rescued.to_string_lossy()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(row, (4, 3), "with the thumbnail's real size");
+        assert_eq!(rep.strays, 1, "the unclaimable one is deleted");
+        assert!(!stale.exists());
+        assert!(foreign.exists(), "a file that is not ours stays");
+    }
+
+    /// The case met on a real cache: the only file the database knew in a
+    /// folder was moved away, but the folder lives on with another picture
+    /// whose row was lost. Its thumbnail must be re-attached, not deleted.
+    #[test]
+    fn a_folder_known_only_through_a_vanished_file_is_still_searched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let folder = tmp.path().join("to_sort");
+        std::fs::create_dir_all(&folder).unwrap();
+
+        // Known to the database, then moved away: the folder's only row.
+        let moved = folder.join("moved.jpg");
+        let mthumb = c.dir.join("thumbs").join("00000000000000bb.jpg");
+        std::fs::write(&mthumb, b"m").unwrap();
+        c.put(&moved.to_string_lossy(), 1, 1, 330, &mthumb.to_string_lossy(), 1, 1);
+
+        // Still in the folder, row lost.
+        let stays = folder.join("stays.jpg");
+        std::fs::write(&stays, b"still-here").unwrap();
+        let m = std::fs::metadata(&stays).unwrap();
+        let mtime = m.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+        let name = format!(
+            "{:016x}.jpg",
+            crate::fnv1a64(format!("{}|{}|{}|{}", stays.to_string_lossy(), mtime, m.len(), 330).as_bytes())
+        );
+        let thumb = c.dir.join("thumbs").join(&name);
+        image::RgbImage::new(2, 2).save(&thumb).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&thumb).unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old)).unwrap();
+
+        let rep = c.purge_orphans(&|_| {}).unwrap();
+
+        assert_eq!(rep.originals, 1, "the moved file is gone");
+        assert_eq!(rep.reattached, 1, "the picture still in the folder gets its row back");
+        assert!(thumb.exists(), "and keeps its thumbnail");
+    }
+
+    /// A changed original replaces its thumbnail AND removes the old file.
+    #[test]
+    fn replacing_a_thumbnail_removes_the_old_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = ThumbCache::open(&tmp.path().join("cache")).unwrap();
+        let a = c.dir.join("thumbs").join("1111111111111111.jpg");
+        let b = c.dir.join("thumbs").join("2222222222222222.jpg");
+        std::fs::write(&a, b"v1").unwrap();
+        std::fs::write(&b, b"v2").unwrap();
+        c.put("E:/p.jpg", 1, 1, 330, &a.to_string_lossy(), 1, 1);
+        c.put("E:/p.jpg", 2, 2, 330, &b.to_string_lossy(), 1, 1);
+        assert!(!a.exists(), "the superseded thumbnail is gone");
+        assert!(b.exists());
     }
 
     #[test]

@@ -227,5 +227,8 @@
   "purgeFinished": "Pulizia completata",
   "purgeNothing": "Niente da pulire: tutti i file sono presenti",
   "purgeFailed": "La pulizia non è riuscita",
-  "purgeOriginals": "file scomparsi"
+  "purgeOriginals": "file scomparsi",
+  "purgeStrays": "Miniature sconosciute al database…",
+  "purgeStrayRemoved": "miniature orfane eliminate",
+  "purgeReattached": "ricollegate al loro file"
 }

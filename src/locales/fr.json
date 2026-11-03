@@ -227,5 +227,8 @@
   "purgeFinished": "Nettoyage terminé",
   "purgeNothing": "Rien à nettoyer : tous les fichiers sont présents",
   "purgeFailed": "Le nettoyage a échoué",
-  "purgeOriginals": "fichiers disparus"
+  "purgeOriginals": "fichiers disparus",
+  "purgeStrays": "Miniatures inconnues de la base…",
+  "purgeStrayRemoved": "miniatures orphelines supprimées",
+  "purgeReattached": "rattachées à leur fichier"
 }

@@ -1720,7 +1720,7 @@ tr.drop-target td {
 #purge-phase { font-weight: 600; }
 #purge-bar { height: 7px; border-radius: 4px; background: var(--bg3); overflow: hidden; }
 #purge-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.12s linear; }
-#purge-detail { color: var(--fg-dim); font-size: 0.9em; font-variant-numeric: tabular-nums; }
+#purge-detail { color: var(--fg-dim); font-size: 0.9em; font-variant-numeric: tabular-nums; white-space: pre-line; }
 /* The final line stays on screen: a result, not a passing notice. */
 #purge-box.done { border-color: rgba(88, 194, 106, 0.55); }
 #purge-box.done #purge-phase { color: #58c26a; }

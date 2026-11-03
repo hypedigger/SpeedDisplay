@@ -227,5 +227,8 @@
   "purgeFinished": "Очистка завершена",
   "purgeNothing": "Нечего очищать: все файлы на месте",
   "purgeFailed": "Очистка не удалась",
-  "purgeOriginals": "исчезнувших файлов"
+  "purgeOriginals": "исчезнувших файлов",
+  "purgeStrays": "Миниатюры, неизвестные базе…",
+  "purgeStrayRemoved": "осиротевших миниатюр удалено",
+  "purgeReattached": "снова привязано к файлам"
 }

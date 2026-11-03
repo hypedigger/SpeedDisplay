@@ -4772,7 +4772,7 @@ bindCheck("set-clear-play-exit", () => settings.clearPlayOnExit, (v) => {
 });
 // ----- Cache purge, shown live -----
 interface PurgeProgress {
-  phase: "read" | "check" | "files" | "records" | "done";
+  phase: "read" | "check" | "files" | "records" | "strays" | "done";
   done: number;
   total: number;
   files: number;
@@ -4810,6 +4810,9 @@ void listen<PurgeProgress>("purge-progress", (ev) => {
     case "records":
       purgeShow("running", t("purgeForgetting"), 100, `${nf(p.files)} ${t("filesSuffix")} - ${fmtSize(p.bytes)}`);
       break;
+    case "strays":
+      purgeShow("running", t("purgeStrays"), pct, `${nf(p.done)} / ${nf(p.total)}`);
+      break;
   }
 });
 
@@ -4820,13 +4823,16 @@ $<HTMLButtonElement>("btn-purge").onclick = () => {
   purgeShow("running", t("purgeReading"), 2, "");
   void invoke("purge_orphans")
     .then((r) => {
-      const rep = r as { originals: number; files: number; bytes: number; records: number };
-      purgeShow(
-        "done",
-        rep.originals ? t("purgeFinished") : t("purgeNothing"),
-        100,
+      const rep = r as {
+        originals: number; files: number; bytes: number; records: number;
+        reattached: number; strays: number; stray_bytes: number;
+      };
+      const anything = rep.originals || rep.strays || rep.reattached;
+      const lines = [
         `${nf(rep.originals)} ${t("purgeOriginals")} - ${nf(rep.files)} ${t("filesSuffix")} (${fmtSize(rep.bytes)}) - ${nf(rep.records)} ${t("purgeRecords")}`,
-      );
+        `${nf(rep.strays)} ${t("purgeStrayRemoved")} (${fmtSize(rep.stray_bytes)}) - ${nf(rep.reattached)} ${t("purgeReattached")}`,
+      ];
+      purgeShow("done", anything ? t("purgeFinished") : t("purgeNothing"), 100, lines.join("\n"));
       void refreshCacheStats();
     })
     .catch((err) => purgeShow("failed", t("purgeFailed"), 100, String(err)))
