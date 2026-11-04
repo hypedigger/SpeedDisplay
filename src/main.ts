@@ -3103,13 +3103,15 @@ function applyViewMode(mode: ViewMode): void {
 }
 
 function viewHistoryGo(delta: number): void {
-  const next = viewPos + delta;
-  if (next < 0 || next >= viewHist.length) {
-    // Nothing left in the display history: in the grid, the thumb buttons
-    // keep their familiar meaning and walk the folder history instead.
-    if (currentViewMode() === "grid") navGo(delta);
+  // In the thumbnails the thumb buttons mean what they mean in a browser:
+  // the previously visited folders. Only with a picture or a video open do
+  // they walk the display modes (fullscreen -> window -> thumbnails).
+  if (currentViewMode() === "grid") {
+    navGo(delta);
     return;
   }
+  const next = viewPos + delta;
+  if (next < 0 || next >= viewHist.length) return;
   viewPos = next;
   applyViewMode(viewHist[viewPos]);
 }
@@ -3919,11 +3921,6 @@ window.addEventListener("resize", () => repaint());
 $<HTMLButtonElement>("btn-up").onclick = goUp;
 $<HTMLButtonElement>("btn-back").onclick = () => navGo(-1);
 $<HTMLButtonElement>("btn-fwd").onclick = () => navGo(1);
-// Mouse side buttons (back/forward), like in a browser.
-window.addEventListener("mouseup", (ev) => {
-  if (ev.button === 3) navGo(-1);
-  else if (ev.button === 4) navGo(1);
-});
 $<HTMLButtonElement>("btn-fav").onclick = () => {
   if (currentPath) toggleFavorite(currentPath);
 };

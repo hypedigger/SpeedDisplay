@@ -16,7 +16,7 @@
 - **Viewer**: windowed or true fullscreen, wheel zoom anchored on the cursor, hold the right button for a 100 % loupe you can drag and zoom, neighbor preloading
 - **Two-page view**, like a PDF reader: pictures side by side, optionally with the first one alone as a cover page; remembered per folder (subfolders keep their own setting)
 - **Video player**: resumes where you stopped, compact floating transport bar in fullscreen, wheel over the bar to seek
-- **Mouse Back/Forward buttons** step through the display modes (thumbnails, window, fullscreen)
+- **Mouse Back/Forward buttons** go back and forth through visited folders, like in a browser; with a picture or video open they step through the display modes (fullscreen, window, thumbnails)
 - **Safe file operations**: copy, cut, paste, drag and drop, merge of same-name folders, overwrites go to the **Recycle Bin**, a move never deletes its source before the copy is verified, conflict dialog with a side-by-side comparison
 - **Windows clipboard interop**: copy in SpeedDisplay, paste in Explorer, and the other way round
 - Ratings, colour labels, keywords and rotations that follow the file when it is moved, renamed or copied; duplicate detection, search, lossless EXIF rotation, XMP sidecars
