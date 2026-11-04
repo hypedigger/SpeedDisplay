@@ -438,8 +438,38 @@ fn clear_cache(state: State<'_, AppState>) -> u64 {
 
 #[tauri::command(async)]
 fn delete_file(path: String) -> Result<(), String> {
-    // Goes to the recycle bin, never a hard delete.
+    // Goes to the recycle bin, never a hard delete. Already gone is what was
+    // asked for, not an error.
+    if Path::new(&path).symlink_metadata().is_err() {
+        return Ok(());
+    }
     trash::delete(&path).map_err(|e| e.to_string())
+}
+
+/// Send a whole selection to the recycle bin in ONE shell operation (one
+/// call per file took seconds for a few hundred pictures, long enough for a
+/// second Delete to send the same files again). Returns what could not be
+/// deleted, with the reason; files that are already gone count as deleted.
+#[tauri::command]
+async fn delete_files(paths: Vec<String>) -> Result<Vec<(String, String)>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let present: Vec<String> = paths
+            .into_iter()
+            .filter(|p| Path::new(p).symlink_metadata().is_ok())
+            .collect();
+        if present.is_empty() || trash::delete_all(&present).is_ok() {
+            return Ok(Vec::new());
+        }
+        // Something refused (a locked file...): the operation may have
+        // stopped half-way, so look at what is still there, one by one.
+        Ok(present
+            .into_iter()
+            .filter(|p| Path::new(p).symlink_metadata().is_ok())
+            .filter_map(|p| trash::delete(&p).err().map(|e| (p, e.to_string())))
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Names inside `dest` that already exist among the pasted items.
@@ -1528,6 +1558,7 @@ fn main() {
             enforce_cache_limit,
             clear_cache,
             delete_file,
+            delete_files,
             rename_file,
             create_folder,
             paste_files,

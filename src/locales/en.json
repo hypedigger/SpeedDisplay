@@ -13,7 +13,7 @@
   "tabGeneral": "General", "tabView": "Viewing", "tabFont": "Font", "tabKeys": "Shortcuts", "tabCache": "Cache",
   "cacheThumbs": "Thumbnails (images + videos)", "cachePreviews": "Animated video previews",
   "cachePlay": "Converted videos (playback)", "cacheTotal": "Total",
-  "cacheLimit": "Size limit", "unlimited": "Unlimited", "filesSuffix": "files",
+  "cacheLimit": "Size limit", "unlimited": "Unlimited", "deleteFailed": "Could not delete", "filesSuffix": "files",
   "act_open": "Open item", "act_up": "Parent folder", "act_gridPrev": "Previous selection",
   "act_gridNext": "Next selection", "act_toggleView": "Toggle grid / list",
   "act_favorite": "Pin to favourites", "act_settings": "Open settings",

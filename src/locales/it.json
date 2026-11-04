@@ -13,7 +13,7 @@
   "tabGeneral": "Generale", "tabView": "Visualizzazione", "tabFont": "Carattere", "tabKeys": "Scorciatoie", "tabCache": "Cache",
   "cacheThumbs": "Miniature (immagini + video)", "cachePreviews": "Anteprime video animate",
   "cachePlay": "Video convertiti (riproduzione)", "cacheTotal": "Totale",
-  "cacheLimit": "Limite di dimensione", "unlimited": "Illimitata", "filesSuffix": "file",
+  "cacheLimit": "Limite di dimensione", "unlimited": "Illimitata", "deleteFailed": "Impossibile eliminare", "filesSuffix": "file",
   "act_open": "Apri elemento", "act_up": "Cartella superiore", "act_gridPrev": "Selezione precedente",
   "act_gridNext": "Selezione successiva", "act_toggleView": "Griglia / elenco",
   "act_favorite": "Aggiungi ai preferiti", "act_settings": "Apri impostazioni",

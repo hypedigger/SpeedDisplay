@@ -13,7 +13,7 @@
   "tabGeneral": "Общие", "tabView": "Просмотр", "tabFont": "Шрифт", "tabKeys": "Клавиши", "tabCache": "Кэш",
   "cacheThumbs": "Миниатюры (фото + видео)", "cachePreviews": "Анимированные превью",
   "cachePlay": "Конвертированные видео", "cacheTotal": "Итого",
-  "cacheLimit": "Лимит размера", "unlimited": "Без лимита", "filesSuffix": "файлов",
+  "cacheLimit": "Лимит размера", "unlimited": "Без лимита", "deleteFailed": "Не удалось удалить", "filesSuffix": "файлов",
   "act_open": "Открыть", "act_up": "Родительская папка", "act_gridPrev": "Предыдущий элемент",
   "act_gridNext": "Следующий элемент", "act_toggleView": "Сетка / список",
   "act_favorite": "В избранное", "act_settings": "Настройки",

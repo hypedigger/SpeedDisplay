@@ -1272,7 +1272,9 @@ function refresh(): void {
   const [sortKey, sortDir] = $<HTMLSelectElement>("sort").value.split("-");
 
   const f = filters;
+  const deleting = pendingDelete.size > 0;
   visible = entries.filter((e) => {
+    if (deleting && pendingDelete.has(normPath(e.path))) return false;
     if (e.hidden && !settings.showHidden) return false;
     if (text && !e.name.toLowerCase().includes(text)) return false;
     if (kindF === "image" && e.kind !== "image" && e.kind !== "raw" && e.kind !== "dir") return false;
@@ -4956,15 +4958,44 @@ async function renameEntry(e: Entry): Promise<void> {
       .catch((err) => alert(String(err)));
   }
 }
-async function deleteEntries(list: Entry[]): Promise<void> {
-  if (!list.length) return;
-  // No confirmation: files go to the recycle bin, always recoverable.
-  for (const e of list) {
-    await invoke("delete_file", { path: e.path }).catch((err) => alert(String(err)));
+/** Files on their way to the recycle bin (normalised paths). They leave the
+ *  view at once and stay out of any re-read until the bin has them. */
+const pendingDelete = new Set<string>();
+
+/** Delete without making anyone wait: the files disappear from the view
+ *  immediately (synchronously, before the first await) and the recycle bin
+ *  does its work in the background. A second Delete on the same files finds
+ *  them gone from the view and from this set's reach: nothing is sent twice. */
+async function trashInBackground(paths: string[]): Promise<void> {
+  const fresh = paths.filter((p) => !pendingDelete.has(normPath(p)));
+  if (!fresh.length) return;
+  for (const p of fresh) {
+    pendingDelete.add(normPath(p));
+    thumbs.delete(p);
   }
-  pushUndo({ kind: "delete", paths: list.map((e) => e.path) });
-  statusbar.textContent = `🗑 ${list.length} ${t("filesSuffix")}`;
-  dropFromListing(list.map((e) => e.path));
+  dropFromListing(fresh);
+  statusbar.textContent = `🗑 ${fresh.length} ${t("filesSuffix")}…`;
+  let failed: [string, string][];
+  try {
+    failed = (await invoke("delete_files", { paths: fresh })) as [string, string][];
+  } catch (err) {
+    failed = fresh.map((p) => [p, String(err)]);
+  }
+  for (const p of fresh) pendingDelete.delete(normPath(p));
+  const failedSet = new Set(failed.map(([p]) => normPath(p)));
+  const done = fresh.filter((p) => !failedSet.has(normPath(p)));
+  if (done.length) pushUndo({ kind: "delete", paths: done });
+  statusbar.textContent = `🗑 ${done.length} ${t("filesSuffix")}`;
+  if (failed.length) {
+    // One message for the lot, and the survivors come back into view.
+    toast(`${t("deleteFailed")} (${failed.length}) : ${baseName(failed[0][0])} - ${failed[0][1]}`);
+    await refreshListing();
+  }
+}
+
+async function deleteEntries(list: Entry[]): Promise<void> {
+  // No confirmation: files go to the recycle bin, always recoverable.
+  await trashInBackground(list.map((e) => e.path));
 }
 function deleteEntry(e: Entry): void {
   void deleteEntries([e]);
@@ -4977,17 +5008,12 @@ function overlayNav(delta: number): void {
 /// Delete the media shown in the viewer/player, then show the next one.
 async function deleteCurrent(): Promise<void> {
   const e = mediaList()[viewerIndex];
-  if (!e) return;
-  // No confirmation: recycle bin only, always recoverable.
-  try {
-    await invoke("delete_file", { path: e.path });
-  } catch (err) {
-    alert(String(err));
-    return;
-  }
+  if (!e || pendingDelete.has(normPath(e.path))) return;
+  // No confirmation: recycle bin only, always recoverable. The file leaves
+  // the listing at once; the bin works in the background.
   const inViewer = !viewer.classList.contains("hidden");
   const idx = viewerIndex;
-  dropFromListing([e.path]);
+  void trashInBackground([e.path]);
   const media = mediaList();
   if (!media.length) {
     if (viewerFS) void setViewerFullscreen(false); // flag drops synchronously
