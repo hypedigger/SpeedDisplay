@@ -1313,10 +1313,10 @@ function refresh(): void {
       // Missing EXIF date falls back to the file date, so nothing collapses.
       const ta = takenMap.get(a.path) ?? a.mtime;
       const tb = takenMap.get(b.path) ?? b.mtime;
-      return (ta - tb) * dirMul;
+      return (ta - tb) * dirMul || byName(a, b);
     }
-    if (sortKey === "date") return (a.mtime - b.mtime) * dirMul;
-    if (sortKey === "size") return (a.size - b.size) * dirMul;
+    if (sortKey === "date") return (a.mtime - b.mtime) * dirMul || byName(a, b);
+    if (sortKey === "size") return (a.size - b.size) * dirMul || byName(a, b);
     if (sortKey === "rating") {
       const ma = metaOf(a.path);
       const mb = metaOf(b.path);
@@ -1335,7 +1335,8 @@ function refresh(): void {
       const db = dimsMap.get(b.path) ?? [0, 0];
       const val = (d: [number, number]) =>
         sortKey === "res" ? d[0] * d[1] : d[1] ? d[0] / d[1] : 0;
-      return (val(da) - val(db)) * dirMul;
+      // Equal sizes (a scanned book) keep their page order, whichever way.
+      return (val(da) - val(db)) * dirMul || byName(a, b);
     }
     if (sortKey === "type") return (a.ext.localeCompare(b.ext) || byName(a, b)) * dirMul;
     return (byName(a, b) || (filters.recursive ? dirCmp(parentOf(a.path), parentOf(b.path)) : 0)) * dirMul;
@@ -1405,7 +1406,10 @@ async function ensureDims(): Promise<void> {
   } finally {
     dimsPending = false;
   }
-  repaint();
+  // Sorting by resolution or ratio ran before the sizes were known (all
+  // zero, so the listing stayed in name order): sort again now they are.
+  if (sortNeedsDims()) refresh();
+  else repaint();
 }
 
 /** "16:9" when it lands on a familiar ratio, "1,85" otherwise. */
