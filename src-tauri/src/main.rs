@@ -1445,6 +1445,73 @@ fn set_wallpaper(path: String) -> Result<(), String> {
     }
 }
 
+/// The program entry the per-extension keys point at: name, icon, command.
+fn write_progid(classes: &winreg::RegKey, exe: &str) -> std::io::Result<()> {
+    let (progid, _) = classes.create_subkey("Lumen.Media")?;
+    progid.set_value("", &"SpeedDisplay media")?;
+    progid.set_value("FriendlyAppName", &"SpeedDisplay")?;
+    let (icon, _) = progid.create_subkey("DefaultIcon")?;
+    icon.set_value("", &format!("\"{exe}\",0"))?;
+    let (cmd, _) = progid.create_subkey("shell\\open\\command")?;
+    cmd.set_value("", &format!("\"{exe}\" \"%1\""))?;
+    Ok(())
+}
+
+/// Put SpeedDisplay in Explorer's "Open with" menu for every type it reads.
+/// Called at each start, since the exe may have moved, but it writes only
+/// when the registered command or the type list is out of date. A default
+/// is never taken over: that stays the user's choice, in Windows or with
+/// the "associate" button of the options.
+fn register_open_with() -> std::io::Result<bool> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_ALL_ACCESS};
+    let exe = std::env::current_exe()?.to_string_lossy().to_string();
+    let command = format!("\"{exe}\" \"%1\"");
+    let classes = winreg::RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags("Software\\Classes", KEY_ALL_ACCESS)?;
+    let exts: Vec<&str> = lumen_core::IMAGE_EXTS
+        .iter()
+        .chain(lumen_core::RAW_EXTS)
+        .chain(lumen_core::VIDEO_EXTS)
+        .copied()
+        .collect();
+
+    const APP: &str = "Applications\\SpeedDisplay.exe";
+    let registered: Option<String> = classes
+        .open_subkey(format!("{APP}\\shell\\open\\command"))
+        .and_then(|k| k.get_value(""))
+        .ok();
+    let listed = classes
+        .open_subkey(format!("{APP}\\SupportedTypes"))
+        .map(|k| k.enum_values().count())
+        .unwrap_or(0);
+    if registered.as_deref() == Some(command.as_str()) && listed == exts.len() {
+        return Ok(false);
+    }
+
+    // The application entry, with the types it declares it can open...
+    let (app, _) = classes.create_subkey(APP)?;
+    app.set_value("FriendlyAppName", &"SpeedDisplay")?;
+    let (icon, _) = app.create_subkey("DefaultIcon")?;
+    icon.set_value("", &format!("\"{exe}\",0"))?;
+    let (cmd, _) = app.create_subkey("shell\\open\\command")?;
+    cmd.set_value("", &command)?;
+    let (types, _) = app.create_subkey("SupportedTypes")?;
+    // ...and the per-extension "Open with" lists, which is what the
+    // submenu of Windows 11 reads.
+    write_progid(&classes, &exe)?;
+    for ext in &exts {
+        types.set_value(format!(".{ext}"), &"")?;
+        let (owp, _) = classes.create_subkey(format!(".{ext}\\OpenWithProgids"))?;
+        owp.set_value("Lumen.Media", &"")?;
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
+        SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, std::ptr::null(), std::ptr::null());
+    }
+    Ok(true)
+}
+
 /// Register HKCU file associations for the given extensions.
 /// (For types already owned by another app, Windows still asks the user
 /// the first time — that hash-protected choice can't be forced.)
@@ -1457,14 +1524,7 @@ fn associate_files(exts: Vec<String>) -> Result<(), String> {
         .open_subkey_with_flags("Software\\Classes", winreg::enums::KEY_ALL_ACCESS)
         .map_err(|e| e.to_string())?;
 
-    let (progid, _) = classes.create_subkey("Lumen.Media").map_err(|e| e.to_string())?;
-    progid.set_value("", &"Fichier multimédia SpeedDisplay").map_err(|e| e.to_string())?;
-    let (icon, _) = progid.create_subkey("DefaultIcon").map_err(|e| e.to_string())?;
-    icon.set_value("", &format!("\"{exe}\",0")).map_err(|e| e.to_string())?;
-    let (cmd, _) = progid
-        .create_subkey("shell\\open\\command")
-        .map_err(|e| e.to_string())?;
-    cmd.set_value("", &format!("\"{exe}\" \"%1\"")).map_err(|e| e.to_string())?;
+    write_progid(&classes, &exe).map_err(|e| e.to_string())?;
 
     for ext in exts {
         let ext = if ext.starts_with('.') { ext } else { format!(".{ext}") };
@@ -1529,6 +1589,11 @@ fn main() {
             // "no more thumbnails" can be traced to the file behind it.
             lumen_core::watchdog::set_log_file(cache_dir.join("speeddisplay.log"));
             lumen_core::watchdog::log("started");
+            std::thread::spawn(|| match register_open_with() {
+                Ok(true) => lumen_core::watchdog::log("registered in the Open with menu"),
+                Ok(false) => {}
+                Err(e) => lumen_core::watchdog::log(&format!("Open with registration failed: {e}")),
+            });
             let ffmpeg = Arc::new(Ffmpeg::new(&cache_dir));
             app.manage(AppState {
                 cache,
