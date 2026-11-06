@@ -26,7 +26,7 @@
   "ctxCut": "Recortar", "ctxCopy": "Copiar", "ctxPaste": "Colar", "ctxPasteHere": "Colar aqui",
   "pregenStart": "Gerar miniaturas (incluindo subpastas)",
   "pregenCancel": "Cancelar geração de miniaturas",
-  "pregenRunning": "Gerando miniaturas:",
+  "pregenScanning": "Procurando arquivos…", "pregenFound": "arquivos encontrados", "pregenRunning": "Gerando miniaturas:",
   "pregenDone": "Miniaturas geradas:",
   "pregenCancelled": "Geração cancelada",
   "ctxBrowseRecursive": "Mostrar todo o conteúdo (incluindo subpastas)",

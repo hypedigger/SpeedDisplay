@@ -26,7 +26,7 @@
   "ctxCut": "Вырезать", "ctxCopy": "Копировать", "ctxPaste": "Вставить", "ctxPasteHere": "Вставить сюда",
   "pregenStart": "Создать миниатюры (включая подпапки)",
   "pregenCancel": "Отменить создание миниатюр",
-  "pregenRunning": "Создание миниатюр:",
+  "pregenScanning": "Поиск файлов…", "pregenFound": "файлов найдено", "pregenRunning": "Создание миниатюр:",
   "pregenDone": "Миниатюр создано:",
   "pregenCancelled": "Создание отменено",
   "ctxBrowseRecursive": "Показать всё содержимое (включая подпапки)",

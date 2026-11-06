@@ -225,15 +225,26 @@ fn pregen_thumbs(
     std::thread::spawn(move || {
         let cancelled = |g: &Arc<AtomicU64>| g.load(Ordering::SeqCst) != generation;
 
-        // 1. Collect the whole subtree first, so the total is known.
+        // 1. Collect the whole subtree first, so the total is known. On a
+        //    drive of 400 000 files that walk alone takes minutes: say how
+        //    far it got, or the button looks like it did nothing.
         let mut items: Vec<ThumbReq> = Vec::new();
         let filter = lumen_core::search::SearchFilter::default();
         let walk_gen = gen_ref.clone();
+        let mut last_tell = std::time::Instant::now();
+        let _ = app.emit("pregen-scan", serde_json::json!({ "generation": generation, "found": 0 }));
         lumen_core::search::search(Path::new(&root), &filter, &mut |e| {
             if cancelled(&walk_gen) {
                 return false;
             }
             items.push(ThumbReq { path: e.path, kind: e.kind, ext: e.ext });
+            if last_tell.elapsed() >= std::time::Duration::from_millis(250) {
+                last_tell = std::time::Instant::now();
+                let _ = app.emit(
+                    "pregen-scan",
+                    serde_json::json!({ "generation": generation, "found": items.len() }),
+                );
+            }
             true
         });
         let total = items.len();

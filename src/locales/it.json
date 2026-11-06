@@ -26,7 +26,7 @@
   "ctxCut": "Taglia", "ctxCopy": "Copia", "ctxPaste": "Incolla", "ctxPasteHere": "Incolla qui",
   "pregenStart": "Genera miniature (sottocartelle incluse)",
   "pregenCancel": "Annulla generazione miniature",
-  "pregenRunning": "Generazione miniature:",
+  "pregenScanning": "Ricerca dei file…", "pregenFound": "file trovati", "pregenRunning": "Generazione miniature:",
   "pregenDone": "Miniature generate:",
   "pregenCancelled": "Generazione annullata",
   "ctxBrowseRecursive": "Mostra tutto il contenuto (sottocartelle incluse)",

@@ -1273,6 +1273,13 @@ html.overlay-fs #strip, html.overlay-fs #exif-panel { display: none !important; 
 #pregen-title { font-weight: 600; margin-bottom: 7px; }
 #pregen-bar { height: 7px; background: var(--bg3); border-radius: 4px; overflow: hidden; }
 #pregen-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.2s linear; }
+/* No total yet (listing the subfolders): a segment sweeps the bar. */
+#pregen-bar.scanning #pregen-fill {
+  width: 30%;
+  transition: none;
+  animation: pregenSweep 1.2s ease-in-out infinite alternate;
+}
+@keyframes pregenSweep { from { transform: translateX(-10%); } to { transform: translateX(245%); } }
 #pregen-row { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
 #pregen-detail { flex: 1; color: var(--fg-dim); font-size: 0.9em; }
 

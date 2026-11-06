@@ -26,7 +26,7 @@
   "ctxCut": "Cut", "ctxCopy": "Copy", "ctxPaste": "Paste", "ctxPasteHere": "Paste here",
   "pregenStart": "Build thumbnails (including subfolders)",
   "pregenCancel": "Cancel thumbnail generation",
-  "pregenRunning": "Building thumbnails:",
+  "pregenScanning": "Finding files…", "pregenFound": "files found", "pregenRunning": "Building thumbnails:",
   "pregenDone": "Thumbnails built:",
   "pregenCancelled": "Generation cancelled",
   "ctxBrowseRecursive": "Show everything (including subfolders)",

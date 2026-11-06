@@ -2439,7 +2439,17 @@ $<HTMLButtonElement>("paste-cancel").onclick = () => {
 let pregenGen = 0;
 let pregenBusy = false;
 
+/** The panel shows up the moment the job is asked for: the first phase
+ *  (listing the subfolders) has no total yet, so the bar sweeps instead. */
+function showPregenScan(found: number): void {
+  $("pregen-panel").classList.remove("hidden");
+  $("pregen-bar").classList.add("scanning");
+  $("pregen-title").textContent = t("pregenScanning");
+  $("pregen-detail").textContent = `${found} ${t("pregenFound")}`;
+}
+
 function startPregen(root: string): void {
+  showPregenScan(0);
   void invoke("pregen_thumbs", { root, tsize: thumbTargetPx() })
     .then((g) => {
       pregenGen = g as number;
@@ -2452,9 +2462,15 @@ function cancelPregen(): void {
   pregenBusy = false;
   $("pregen-panel").classList.add("hidden");
 }
+void listen<{ generation: number; found: number }>("pregen-scan", (ev) => {
+  if (ev.payload.generation < pregenGen) return;
+  pregenBusy = true;
+  showPregenScan(ev.payload.found);
+});
 void listen<{ generation: number; done: number; total: number }>("pregen-progress", (ev) => {
   if (ev.payload.generation < pregenGen) return;
   pregenBusy = true;
+  $("pregen-bar").classList.remove("scanning");
   const { done, total } = ev.payload;
   const pct = total ? Math.round((done / total) * 100) : 0;
   // Its own floating panel: browsing stays completely usable meanwhile.
