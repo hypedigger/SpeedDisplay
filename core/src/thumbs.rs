@@ -91,7 +91,11 @@ fn decode(src: &Path, kind: EntryKind) -> Option<DynamicImage> {
     let (img, orientation) = match kind {
         EntryKind::Raw => {
             let jpeg = raw::extract_preview(src)?;
-            let o = exif_orientation_from_bytes(&jpeg);
+            // The preview is stored as the sensor saw it; the angle the
+            // camera (or a rotation) recorded is in the raw's own IFD0.
+            let o = crate::exifwrite::container_orientation(src)
+                .map(u32::from)
+                .unwrap_or_else(|| exif_orientation_from_bytes(&jpeg));
             (image::load_from_memory(&jpeg).ok()?, o)
         }
         _ => {
@@ -380,6 +384,16 @@ mod tests {
         let order = order.lock().unwrap();
         assert_eq!(order.len(), n);
         assert_eq!(order.last(), Some(&items[0].0), "the others waited for the slow one");
+    }
+
+    /// A real raw shot upright comes out upright (SD_PROBE=path to a raw).
+    #[test]
+    #[ignore]
+    fn probe_raw_orientation() {
+        let Ok(p) = std::env::var("SD_PROBE") else { return };
+        let img = decode(Path::new(&p), EntryKind::Raw).unwrap();
+        let o = crate::exifwrite::container_orientation(Path::new(&p));
+        println!("orientation {:?} -> thumbnail {}x{}", o, img.width(), img.height());
     }
 
     #[test]

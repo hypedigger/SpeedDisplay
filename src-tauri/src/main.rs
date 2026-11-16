@@ -377,6 +377,11 @@ async fn full_image(state: State<'_, AppState>, path: String, kind: EntryKind, e
         match kind {
             EntryKind::Raw => {
                 let jpeg = lumen_core::raw::extract_preview(src).ok_or("no preview")?;
+                // The angle is in the raw, not in its preview: hand it over.
+                let jpeg = match lumen_core::exifwrite::container_orientation(src) {
+                    Some(o) => lumen_core::exifwrite::tag_jpeg_orientation(&jpeg, o),
+                    None => jpeg,
+                };
                 let key = lumen_core::fnv1a64(path.as_bytes());
                 let out = cache.dir.join("play").join(format!("{key:016x}_full.jpg"));
                 std::fs::write(&out, jpeg).map_err(|e| e.to_string())?;

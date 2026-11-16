@@ -226,8 +226,65 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// The orientation tag of IFD0, read in place: a few seeks, where the EXIF
+/// crate loads a whole raw (25-60 MB) to find the same two bytes. `None`
+/// when the file carries no such tag.
+pub fn container_orientation(path: &Path) -> Option<u16> {
+    let (offset, le) = find_orientation(path)?;
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(offset)).ok()?;
+    let mut v = [0u8; 2];
+    f.read_exact(&mut v).ok()?;
+    let o = rd_u16(&v, le);
+    (1..=8).contains(&o).then_some(o)
+}
+
+/// The same JPEG with `orientation` as its only EXIF. The preview a camera
+/// embeds in a raw is stored as the sensor saw it, with no tag of its own:
+/// the angle lives in the raw's IFD0. Tagging the extracted preview lets
+/// the web view turn it upright by itself, without decoding a pixel.
+pub fn tag_jpeg_orientation(jpeg: &[u8], orientation: u16) -> Vec<u8> {
+    if jpeg.len() < 4 || jpeg[0..2] != [0xFF, 0xD8] {
+        return jpeg.to_vec();
+    }
+    // Drop any EXIF the preview carries, so ours is the one that is read.
+    let mut rest: Vec<u8> = Vec::with_capacity(jpeg.len());
+    let mut pos = 2;
+    while pos + 4 <= jpeg.len() && jpeg[pos] == 0xFF && jpeg[pos + 1] != 0xDA {
+        let len = u16::from_be_bytes([jpeg[pos + 2], jpeg[pos + 3]]) as usize;
+        let end = (pos + 2 + len).min(jpeg.len());
+        let exif = jpeg[pos + 1] == 0xE1 && jpeg[pos + 4..end].starts_with(b"Exif\0\0");
+        if !exif {
+            rest.extend_from_slice(&jpeg[pos..end]);
+        }
+        pos = end;
+    }
+    rest.extend_from_slice(&jpeg[pos..]);
+
+    let mut app1: Vec<u8> = Vec::with_capacity(40);
+    app1.extend_from_slice(b"Exif\0\0II*\0");
+    app1.extend_from_slice(&8u32.to_le_bytes()); // IFD0 right after the header
+    app1.extend_from_slice(&1u16.to_le_bytes()); // one entry
+    app1.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+    app1.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+    app1.extend_from_slice(&1u32.to_le_bytes()); // count
+    app1.extend_from_slice(&orientation.to_le_bytes());
+    app1.extend_from_slice(&[0, 0]);
+    app1.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+
+    let mut out = Vec::with_capacity(rest.len() + app1.len() + 6);
+    out.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE1]);
+    out.extend_from_slice(&((app1.len() + 2) as u16).to_be_bytes());
+    out.extend_from_slice(&app1);
+    out.extend_from_slice(&rest);
+    out
+}
+
 /// Current EXIF orientation (1 when absent or unreadable).
 pub fn get_orientation(path: &Path) -> u16 {
+    if let Some(o) = container_orientation(path) {
+        return o;
+    }
     let Ok(file) = std::fs::File::open(path) else { return 1 };
     let mut r = std::io::BufReader::new(file);
     exif::Reader::new()
@@ -255,6 +312,48 @@ pub fn rotate_orientation(current: u16, quarters: i32) -> u16 {
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    /// A camera preview carries no angle; once tagged, any EXIF reader (the
+    /// web view included) sees the raw's orientation, and the pixels are
+    /// untouched.
+    #[test]
+    fn a_tagged_preview_carries_the_raw_orientation() {
+        let mut jpeg = Vec::new();
+        image::DynamicImage::new_rgb8(32, 16)
+            .write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+            .unwrap();
+        let tagged = tag_jpeg_orientation(&jpeg, 8);
+        let exif = exif::Reader::new()
+            .read_from_container(&mut std::io::Cursor::new(&tagged))
+            .unwrap();
+        let o = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY).unwrap();
+        assert_eq!(o.value.get_uint(0), Some(8));
+        let img = image::load_from_memory(&tagged).unwrap();
+        assert_eq!((img.width(), img.height()), (32, 16));
+        // Tagging twice keeps a single EXIF block, holding the latest angle.
+        let again = tag_jpeg_orientation(&tagged, 6);
+        assert_eq!(again.len(), tagged.len());
+    }
+
+    /// The angle of a TIFF-based raw is read from IFD0 in place.
+    #[test]
+    fn container_orientation_reads_ifd0() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("shot.arw");
+        let mut b: Vec<u8> = b"II*\0".to_vec();
+        b.extend_from_slice(&8u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&0x0112u16.to_le_bytes());
+        b.extend_from_slice(&3u16.to_le_bytes());
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&8u16.to_le_bytes());
+        b.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        std::fs::write(&p, &b).unwrap();
+        assert_eq!(container_orientation(&p), Some(8));
+        assert_eq!(get_orientation(&p), 8);
+        std::fs::write(&p, b"not a picture").unwrap();
+        assert_eq!(container_orientation(&p), None);
+    }
 
     /// Compare the hand walker with the EXIF crate on a real file (SD_PROBE).
     #[test]

@@ -5241,22 +5241,17 @@ function rotateTargets(delta: number, reset = false): void {
     }
   };
 
-  // RAW files are displayed through the JPEG preview embedded by the
-  // camera, which carries its OWN orientation: patching the container's
-  // tag would not move those pixels. They always rotate through the
-  // database (and the tag is still written, for other programs).
+  // Raws are shown at the angle of their own tag (the embedded preview is
+  // tagged on the way out), so they rotate through it like a JPEG. Only the
+  // note about Adobe tools sets them apart.
   const rawTargets = targets.filter((e) => e.kind === "raw");
-  const exifTargets = targets.filter((e) => e.kind !== "raw");
+  const exifTargets = targets;
 
   if (settings.writeExifRotation && !reset) {
     const quarters = delta > 0 ? 1 : -1;
-    // RAW files always rotate through the database; the container tag is
-    // written all the same, for other programs.
-    applyDbRotation(rawTargets);
-
-    // One single backend batch for both kinds: two concurrent runs would
-    // fight over the cancellation counter, and one progress bar is enough.
-    const all = [...rawTargets, ...exifTargets];
+    // One single backend batch: two concurrent runs would fight over the
+    // cancellation counter, and one progress bar is enough.
+    const all = exifTargets;
     if (all.length) {
       const token = ++rotToken;
       if (all.length >= ROT_PANEL_MIN) rotPanelShow(all.length);

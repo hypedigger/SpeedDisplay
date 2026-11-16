@@ -8,6 +8,33 @@ use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+/// Version 1: raws are shown at the angle stored in the raw itself. Before,
+/// that tag was ignored, so (a) their thumbnails were built sideways and
+/// (b) a rotation was kept as a display angle in the database ON TOP of the
+/// patched tag. Honouring the tag with that angle still applied would turn
+/// those pictures twice: both are dropped, once.
+fn migrate_raw_orientation(conn: &Connection) {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+    if version >= 1 {
+        return;
+    }
+    let is_raw = crate::RAW_EXTS
+        .iter()
+        .map(|e| format!("lower(path) LIKE '%.{e}'"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let stale: Vec<String> = conn
+        .prepare(&format!("SELECT thumb FROM thumbs WHERE {is_raw}"))
+        .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.flatten().collect()))
+        .unwrap_or_default();
+    for t in &stale {
+        let _ = std::fs::remove_file(t);
+    }
+    let _ = conn.execute(&format!("DELETE FROM thumbs WHERE {is_raw}"), []);
+    let _ = conn.execute(&format!("UPDATE meta SET rot = 0 WHERE rot != 0 AND ({is_raw})"), []);
+    let _ = conn.execute("PRAGMA user_version = 1", []);
+}
+
 pub struct ThumbCache {
     conn: Mutex<Connection>,
     pub dir: PathBuf,
@@ -70,6 +97,7 @@ impl ThumbCache {
         let _ = conn.execute("ALTER TABLE meta ADD COLUMN pos REAL NOT NULL DEFAULT 0", []);
         // Total length of a video, in seconds; 0 = never probed.
         let _ = conn.execute("ALTER TABLE meta ADD COLUMN dur REAL NOT NULL DEFAULT 0", []);
+        migrate_raw_orientation(&conn);
         Ok(Self {
             conn: Mutex::new(conn),
             dir: dir.to_path_buf(),
@@ -1164,6 +1192,56 @@ mod tests {
         let t = std::time::Instant::now();
         c.follow_files(&pairs, true);
         println!("follow_files: {} pairs over {} rows took {:?}", pairs.len(), 55_275, t.elapsed());
+    }
+
+    /// Opening an old cache drops the sideways raw thumbnails and the raw
+    /// display angles, once, and leaves everything else alone.
+    #[test]
+    fn raw_orientation_migration_runs_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("cache");
+        {
+            let c = ThumbCache::open(&dir).unwrap();
+            let conn = c.conn.lock().unwrap();
+            conn.execute("PRAGMA user_version = 0", []).unwrap();
+        }
+        let raw_thumb = dir.join("thumbs").join("r.jpg");
+        let jpg_thumb = dir.join("thumbs").join("j.jpg");
+        std::fs::write(&raw_thumb, b"x").unwrap();
+        std::fs::write(&jpg_thumb, b"x").unwrap();
+        {
+            let c = ThumbCache::open(&dir).unwrap();
+            let conn = c.conn.lock().unwrap();
+            conn.execute("PRAGMA user_version = 0", []).unwrap();
+            for (p, t) in [("E:/a/DSC1.ARW", &raw_thumb), ("E:/a/b.jpg", &jpg_thumb)] {
+                conn.execute(
+                    "INSERT INTO thumbs (path, mtime, size, tsize, thumb, w, h) VALUES (?1,1,1,330,?2,1,1)",
+                    params![p, t.to_string_lossy()],
+                )
+                .unwrap();
+                conn.execute("INSERT INTO meta (path, parent, rot) VALUES (?1, 'E:/a', 90)", params![p]).unwrap();
+            }
+        }
+        let c = ThumbCache::open(&dir).unwrap();
+        let conn = c.conn.lock().unwrap();
+        let thumbs: i64 = conn.query_row("SELECT count(*) FROM thumbs", [], |r| r.get(0)).unwrap();
+        let rots: Vec<i64> = conn
+            .prepare("SELECT rot FROM meta ORDER BY path")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(thumbs, 1, "only the raw thumbnail goes");
+        assert!(!raw_thumb.exists() && jpg_thumb.exists());
+        assert_eq!(rots, vec![0, 90], "only the raw angle is dropped");
+        drop(conn);
+        // Second opening: nothing more happens.
+        drop(c);
+        let c = ThumbCache::open(&dir).unwrap();
+        let conn = c.conn.lock().unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 1);
     }
 
     #[test]
