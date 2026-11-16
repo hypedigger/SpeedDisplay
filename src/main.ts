@@ -6,6 +6,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { setLang, t } from "./i18n";
+import { supportDue } from "./support";
 import "./styles.css";
 
 type Kind = "dir" | "image" | "raw" | "video" | "other";
@@ -125,6 +126,10 @@ interface Settings {
   writeExifRotation: boolean;
   /** Mirror ratings, colour labels and keywords into .xmp sidecars. */
   writeXmp: boolean;
+  /** Number of launches; drives the occasional "support the creator" popup. */
+  usageCount: number;
+  /** "Don't ask me again" was ticked in that popup. */
+  supportOptOut: boolean;
 }
 
 interface FilterState {
@@ -265,6 +270,8 @@ const DEFAULTS: Settings = {
   preloadCount: 5,
   writeExifRotation: true,
   writeXmp: true,
+  usageCount: 0,
+  supportOptOut: false,
 };
 
 // Themes: the two originals plus palettes borrowed from macOS, popular
@@ -3546,11 +3553,21 @@ function playerNav(delta: number): void {
   if (e.kind === "video") {
     openPlayer(i);
   } else {
-    playerEntry = null;
+    unloadVideo();
     player.classList.add("hidden");
     openViewer(i);
   }
 }
+/** Stop the video for good: pause, and let go of the source. Hiding the
+ *  player is not enough - a hidden <video> set to loop plays on, and its
+ *  open file keeps the recycle bin from taking it. */
+function unloadVideo(): void {
+  playerVideo.pause();
+  playerVideo.removeAttribute("src");
+  playerVideo.load();
+  playerEntry = null;
+}
+
 function closePlayer(force = false): void {
   // Same two-step exit as the image viewer.
   if (viewerFS) {
@@ -3558,9 +3575,7 @@ function closePlayer(force = false): void {
     if (!force) return;
   }
   saveVideoPos(); // before the source goes away
-  playerVideo.pause();
-  playerVideo.src = "";
-  playerEntry = null;
+  unloadVideo();
   player.classList.add("hidden");
   updateOverlayState();
   if (viewer.classList.contains("hidden")) {
@@ -4699,6 +4714,43 @@ $<HTMLButtonElement>("btn-associate").onclick = () => {
     .catch((err) => alert(String(err)));
 };
 
+// ----- Support the creator: Ko-fi link + occasional popup -----
+const supportModal = $<HTMLDivElement>("support-modal");
+const openSupportPage = () => void invoke("open_support_page").catch(() => {});
+function closeSupport(): void {
+  if ($<HTMLInputElement>("support-optout").checked) {
+    settings.supportOptOut = true;
+    saveSettings();
+  }
+  supportModal.classList.add("hidden");
+}
+$<HTMLButtonElement>("btn-support").onclick = openSupportPage;
+$<HTMLButtonElement>("support-go").onclick = () => {
+  openSupportPage();
+  closeSupport();
+};
+$<HTMLButtonElement>("support-later").onclick = closeSupport;
+supportModal.addEventListener("mousedown", (ev) => {
+  if (ev.target === supportModal) closeSupport(); // click outside the panel
+});
+/** Count this launch, in the settings file like everything else. */
+function countLaunch(): void {
+  settings.usageCount = (Number(settings.usageCount) || 0) + 1;
+  saveSettings();
+}
+/** Show the popup a moment after startup, never over a viewer or a dialog:
+ *  while one is up, look again later. */
+function askSupportWhenIdle(): void {
+  window.setTimeout(() => {
+    if (document.querySelector(".overlay:not(.hidden)")) askSupportWhenIdle();
+    else supportModal.classList.remove("hidden");
+  }, 2500);
+}
+/** The popup is due at the 10th launch, then every 100, unless opted out. */
+function askSupportIfDue(): void {
+  if (supportDue(settings.usageCount, settings.supportOptOut)) askSupportWhenIdle();
+}
+
 // Floating navigation buttons over the grid (top-right and bottom-right):
 // jump to top/bottom plus one-screen up/down next to each.
 $<HTMLButtonElement>("btn-jump-top").onclick = () =>
@@ -5033,6 +5085,8 @@ async function deleteCurrent(): Promise<void> {
   // the listing at once; the bin works in the background.
   const inViewer = !viewer.classList.contains("hidden");
   const idx = viewerIndex;
+  // The video being deleted must stop now, and release its file first.
+  if (!inViewer) unloadVideo();
   void trashInBackground([e.path]);
   const media = mediaList();
   if (!media.length) {
@@ -5362,6 +5416,10 @@ document.addEventListener("keydown", (ev) => {
   // The text prompt is modal: nothing else may see a key while it is up.
   if (!$("input-modal").classList.contains("hidden")) {
     if (ev.key === "Escape") $<HTMLButtonElement>("input-cancel").click();
+    return;
+  }
+  if (!supportModal.classList.contains("hidden")) {
+    if (ev.key === "Escape") closeSupport();
     return;
   }
   // Modal overlays: Escape closes, other keys pass through to inputs.
@@ -5868,6 +5926,7 @@ window.addEventListener("unhandledrejection", (ev) => {
 // ---------- Boot ----------
 (async () => {
   await loadSettings();
+  countLaunch();
   enforceCacheLimit();
   await buildSidebar();
   void readClipboard(); // Explorer may already hold a file selection
@@ -5897,4 +5956,4 @@ window.addEventListener("unhandledrejection", (ev) => {
     if (await openDir(settings.startPath)) return;
   }
   if (fallback) await openDir(fallback);
-})();
+})().finally(askSupportIfDue); // once the first folder (or file) is on screen
