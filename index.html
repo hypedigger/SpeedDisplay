@@ -290,6 +290,10 @@
         <span data-i18n="associate" data-i18n-title="tipAssociate"></span>
         <button id="btn-associate" data-i18n="associateGo"></button>
       </label>
+      <label>
+        <span data-i18n="supportRow"></span>
+        <button id="btn-support" data-i18n="supportGo"></button>
+      </label>
       </div>
 
       <div class="spane hidden" id="pane-view">
@@ -544,6 +548,19 @@
       <div class="modal-actions">
         <button id="input-ok" class="tb" data-i18n="ok"></button>
         <button id="input-cancel" class="tb" data-i18n="cancel"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Support the creator: shown at the 10th launch, then every 100 -->
+  <div id="support-modal" class="overlay dim hidden">
+    <div class="modal-panel">
+      <h2 data-i18n="supportTitle"></h2>
+      <p id="support-body" data-i18n="supportBody"></p>
+      <label id="support-optout-row"><input type="checkbox" id="support-optout" /> <span data-i18n="supportOptOut"></span></label>
+      <div class="modal-actions">
+        <button id="support-go" class="tb" data-i18n="supportGo"></button>
+        <button id="support-later" class="tb" data-i18n="supportLater"></button>
       </div>
     </div>
   </div>

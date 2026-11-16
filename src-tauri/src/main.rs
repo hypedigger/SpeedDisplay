@@ -841,6 +841,34 @@ fn reveal(path: String) {
     }
 }
 
+/// Opens the creator's Ko-fi page in the default browser. The address is
+/// fixed here: the web view cannot ask for any other one.
+#[tauri::command]
+fn open_support_page() {
+    const URL: &str = "https://ko-fi.com/hypedigger";
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+        let (verb, url) = (wide("open"), wide(URL));
+        unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                url.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(URL).spawn();
+    }
+}
+
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> serde_json::Value {
     let p = settings_path(&app);
@@ -1680,6 +1708,7 @@ fn main() {
             open_with,
             get_startup_file,
             reveal,
+            open_support_page,
             get_settings,
             save_settings
         ])

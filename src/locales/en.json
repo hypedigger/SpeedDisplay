@@ -230,5 +230,9 @@
   "purgeOriginals": "vanished files",
   "purgeStrays": "Thumbnails unknown to the database…",
   "purgeStrayRemoved": "orphan thumbnails deleted",
-  "purgeReattached": "re-attached to their file"
+  "purgeReattached": "re-attached to their file",
+  "supportRow": "Support the creator", "supportGo": "☕ Support on Ko-fi", "supportLater": "Later",
+  "supportOptOut": "Don't ask me again",
+  "supportTitle": "☕ Enjoying SpeedDisplay?",
+  "supportBody": "This app is free and open source, built in its creator's spare time.\n\nIf it saves you time, a small coffee on Ko-fi helps keep it going — thank you!"
 }

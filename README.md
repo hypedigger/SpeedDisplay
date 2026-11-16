@@ -87,6 +87,8 @@ If SpeedDisplay makes your photo sorting faster:
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/hypedigger)
 
+The same link sits at the bottom of **Options → General**. The app also asks once at its 10th launch, then every 100 launches; tick "Don't ask me again" to turn that off for good.
+
 ## License
 
 [MIT](LICENSE)

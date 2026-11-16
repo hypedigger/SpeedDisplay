@@ -1187,6 +1187,13 @@ html.overlay-fs #strip, html.overlay-fs #exif-panel { display: none !important; 
 
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .hint { color: var(--fg-dim); font-size: 0.85em; }
+/* Support the creator (Ko-fi) */
+#support-modal .modal-panel { width: 440px; max-width: 90vw; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5); }
+#support-body { white-space: pre-line; line-height: 1.5; }
+#support-optout-row { justify-content: flex-start; gap: 8px; color: var(--fg-dim); cursor: pointer; }
+#support-optout { width: 16px; height: 16px; padding: 0; accent-color: var(--accent); }
+#support-go { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+#support-go:hover { filter: brightness(1.1); }
 #rename-preview {
   background: var(--bg3);
   border-radius: 6px;

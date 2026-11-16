@@ -230,5 +230,9 @@
   "purgeOriginals": "arquivos desaparecidos",
   "purgeStrays": "Miniaturas desconhecidas do banco…",
   "purgeStrayRemoved": "miniaturas órfãs excluídas",
-  "purgeReattached": "religadas ao seu arquivo"
+  "purgeReattached": "religadas ao seu arquivo",
+  "supportRow": "Apoiar o criador", "supportGo": "☕ Apoiar no Ko-fi", "supportLater": "Mais tarde",
+  "supportOptOut": "Não perguntar novamente",
+  "supportTitle": "☕ Gostando do SpeedDisplay?",
+  "supportBody": "Este aplicativo é gratuito e de código aberto, desenvolvido no tempo livre do seu criador.\n\nSe ele economiza o seu tempo, um cafezinho no Ko-fi ajuda a mantê-lo — obrigado!"
 }

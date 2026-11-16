@@ -230,5 +230,9 @@
   "purgeOriginals": "file scomparsi",
   "purgeStrays": "Miniature sconosciute al database…",
   "purgeStrayRemoved": "miniature orfane eliminate",
-  "purgeReattached": "ricollegate al loro file"
+  "purgeReattached": "ricollegate al loro file",
+  "supportRow": "Sostieni il creatore", "supportGo": "☕ Sostieni su Ko-fi", "supportLater": "Più tardi",
+  "supportOptOut": "Non chiedermelo più",
+  "supportTitle": "☕ Ti piace SpeedDisplay?",
+  "supportBody": "Questa applicazione è gratuita e open source, sviluppata nel tempo libero del suo creatore.\n\nSe ti fa risparmiare tempo, un piccolo caffè su Ko-fi la aiuta a continuare — grazie!"
 }
