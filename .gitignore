@@ -19,3 +19,6 @@ Desktop.ini
 *.zip
 src-tauri/gen/
 *.lnk
+
+# Doc de travail local (chemins et noms personnels)
+DOC-DE-TRAVAIL.md
