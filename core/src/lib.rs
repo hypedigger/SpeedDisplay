@@ -5,6 +5,7 @@ pub mod cache;
 pub mod fileops;
 pub mod duplicates;
 pub mod exifwrite;
+pub mod lrmeta;
 pub mod xmp;
 pub mod raw;
 pub mod scan;
