@@ -14,7 +14,7 @@
 - **RAW**: near-instant display via the embedded JPEG preview (CR2, CR3, NEF, ARW, RW2, RAF, ORF, DNG…)
 - **Videos**: thumbnails, animated hover previews (live or pre-generated), direct playback, lossless MKV→MP4 remux, NVENC transcode as a last resort
 - **Viewer**: windowed or true fullscreen, wheel zoom anchored on the cursor, hold the right button for a 100 % loupe you can drag and zoom, neighbor preloading
-- **Two-page view**, like a PDF reader: pictures side by side, optionally with the first one alone as a cover page; remembered per folder (subfolders keep their own setting)
+- **Two-page view**, like a PDF reader: pictures side by side, optionally with the first one alone as a cover page; remembered per folder (subfolders keep their own setting); each page has its own delete button in its corner, and the Delete key removes the left one
 - **Video player**: resumes where you stopped, compact floating transport bar in fullscreen, wheel over the bar to seek
 - **Listed in Explorer's "Open with" menu** for every supported image, RAW and video type (registered for the current user at startup; the default app is never changed behind your back)
 - **Mouse Back/Forward buttons** go back and forth through visited folders, like in a browser; with a picture or video open they step through the display modes (fullscreen, window, thumbnails)

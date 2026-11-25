@@ -2783,6 +2783,8 @@ let pendingDims: { w: number; h: number } | null = null;
 
 // ---------- Two-page view ----------
 const viewerImg2 = $<HTMLImageElement>("viewer-img2");
+const viewerDel1 = $<HTMLButtonElement>("viewer-del1");
+const viewerDel2 = $<HTMLButtonElement>("viewer-del2");
 
 /** The pictures shown together for media index `i`: [first, second], second
  *  being -1 when the page stands alone. Only still pictures pair up; a video
@@ -2896,6 +2898,7 @@ function applyViewerScale(): void {
   const h = Math.round(nh * s);
   const rotEl0 = $<HTMLDivElement>("viewer-rot");
   rotEl0.classList.toggle("spread", inSpread());
+  viewer.classList.toggle("in-spread", inSpread());
   if (inSpread()) {
     // One scale for the whole spread: page 1 keeps its size, page 2 gets
     // the same height and its own width.
@@ -2909,6 +2912,8 @@ function applyViewerScale(): void {
     viewerImg.style.height = `${h1}px`;
     viewerImg2.style.width = `${Math.max(0, w - w1)}px`;
     viewerImg2.style.height = `${h1}px`;
+    // The left page's delete button sits in ITS bottom-right corner.
+    viewerDel1.style.left = `${w1 - viewerDel1.offsetWidth - 12}px`;
     rotEl0.style.width = `${w}px`;
     rotEl0.style.height = `${h1}px`;
     viewerScroll.classList.toggle(
@@ -3341,6 +3346,7 @@ let secondPagePath = "";
 function showSecondPage(e2: Entry | null): void {
   if (!e2) {
     secondPagePath = "";
+    viewer.classList.remove("in-spread");
     viewerImg2.hidden = true;
     viewerImg2.removeAttribute("src");
     return;
@@ -4251,6 +4257,12 @@ for (const id of ["viewer-close", "player-close"]) {
 }
 
 $<HTMLButtonElement>("viewer-del").onclick = () => void deleteCurrent();
+viewerDel1.onclick = () => void deleteCurrent(0);
+viewerDel2.onclick = () => void deleteCurrent(1);
+// A press on a page's button is not the start of a pan or of a 100 % peek.
+for (const b of [viewerDel1, viewerDel2]) {
+  b.addEventListener("mousedown", (ev) => ev.stopPropagation());
+}
 $<HTMLButtonElement>("player-del").onclick = () => void deleteCurrent();
 viewerImg.addEventListener("load", () => applyViewerScale());
 window.addEventListener("resize", () => {
@@ -5078,8 +5090,12 @@ function overlayNav(delta: number): void {
 }
 
 /// Delete the media shown in the viewer/player, then show the next one.
-async function deleteCurrent(): Promise<void> {
-  const e = mediaList()[viewerIndex];
+/// In a spread, `page` 1 is the right-hand page; the left one (the key's
+/// target) stays the anchor either way.
+async function deleteCurrent(page: 0 | 1 = 0): Promise<void> {
+  const target = page === 1 ? spreadPair(viewerIndex)[1] : viewerIndex;
+  if (target < 0) return;
+  const e = mediaList()[target];
   if (!e || pendingDelete.has(normPath(e.path))) return;
   // No confirmation: recycle bin only, always recoverable. The file leaves
   // the listing at once; the bin works in the background.

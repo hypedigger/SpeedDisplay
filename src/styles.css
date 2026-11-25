@@ -1719,6 +1719,14 @@ tr.drop-target td {
   flex: none;
 }
 #viewer-rot.spread #viewer-img2 { box-shadow: -1px 0 0 rgba(0, 0, 0, 0.55); }
+/* A spread has one delete button per page, in its bottom-right corner,
+   instead of the single one on the right edge of the screen. */
+.page-del { display: none; bottom: 12px; z-index: 1; background: rgba(0, 0, 0, 0.45); }
+.page-del:hover { background: rgba(224, 85, 85, 0.6); }
+#viewer-del2 { right: 12px; }
+#viewer.in-spread .page-del { display: block; }
+#viewer.in-spread #viewer-del,
+#viewer.v-hide-del .page-del { display: none !important; }
 
 /* ---------- Cache purge: live progress ---------- */
 #purge-box {
